@@ -2,6 +2,7 @@ import os
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["ATTN_BACKEND"] = "sdpa"
+os.environ["SPARSE_ATTN_BACKEND"] = "sdpa"
 
 import asyncio
 import uuid
@@ -25,6 +26,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from trellis2.modules.sparse import SparseTensor
+from trellis2.modules.sparse import config as sparse_config
+sparse_config.ATTN = 'sdpa'  # Force sdpa — flash_attn not installed
 from trellis2.pipelines import Trellis2ImageTo3DPipeline, Trellis2TexturingPipeline
 from trellis2.renderers import EnvMap
 from trellis2.utils import render_utils

@@ -2,23 +2,26 @@
 # =============================================================================
 # TRELLIS.2 WebUI — Vast.ai Provisioning Script (Two-Phase Install)
 # =============================================================================
-# Usage: Set this script's raw GitHub URL as the "on-start script" in your
-#        vast.ai template.  Image: vastai/base-image:cuda-13.2.0-auto
+# Usage: Set this script's raw GitHub URL as the PROVISIONING_SCRIPT env var
+#        in your vast.ai template.  Image: vastai/base-image:cuda-13.2.0-auto
 #
 # Phase 1: Clone & build TRELLIS.2 (upstream) with all CUDA extensions
 # Phase 2: Clone & install trellis2-webui (this repo) on top
 #
+# The WebUI is registered as a Supervisor service so it auto-restarts,
+# logs are accessible, and it coexists with Jupyter/SSH/Syncthing.
+#
 # All state lives under /workspace/ (persists across stop/start).
 # First boot: ~15-25 min. Subsequent boots: ~30 s.
 # =============================================================================
-set -euo pipefail
+set -eo pipefail
 
 # ---------------------------------------------------------------------------
 # Configuration — override via vast.ai env vars
 # ---------------------------------------------------------------------------
 TRELLIS_REPO="${TRELLIS_REPO_URL:-https://github.com/microsoft/TRELLIS.2.git}"
 TRELLIS_BRANCH="${TRELLIS_REPO_BRANCH:-main}"
-WEBUI_REPO="${WEBUI_REPO_URL:-https://github.com/YOUR_USER/trellis2-webui.git}"
+WEBUI_REPO="${WEBUI_REPO_URL:-https://github.com/matatratata/trellis2-webui.git}"
 WEBUI_BRANCH="${WEBUI_REPO_BRANCH:-main}"
 
 TRELLIS_DIR="/workspace/TRELLIS.2"
@@ -31,8 +34,28 @@ PORT="${TRELLIS_PORT:-8000}"
 HF_TOKEN="${HF_TOKEN:-}"
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+wait_for_apt() {
+    local tries=0
+    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || \
+          fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+        if [ $tries -eq 0 ]; then
+            echo "  Waiting for apt lock (base image still running)..."
+        fi
+        tries=$((tries + 1))
+        sleep 2
+        if [ $tries -ge 30 ]; then
+            echo "  WARNING: apt lock held for 60 s, proceeding anyway"
+            break
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+mkdir -p "$(dirname "$LOG_FILE")"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo ""
 echo "========================================"
@@ -42,9 +65,10 @@ echo "========================================"
 # ---------------------------------------------------------------------------
 # 1. System packages
 # ---------------------------------------------------------------------------
-echo "[1/8] Installing system packages..."
-apt-get update -qq
-apt-get install -y -qq libjpeg-dev libgl1-mesa-glx git curl > /dev/null 2>&1
+echo "[1/9] Installing system packages..."
+wait_for_apt
+apt-get update -qq 2>&1 || echo "  WARNING: apt-get update had issues, continuing..."
+apt-get install -y -qq libjpeg-dev libgl1 git curl 2>&1 || echo "  WARNING: some apt packages may have failed"
 
 if ! command -v node &> /dev/null; then
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - > /dev/null 2>&1
@@ -55,7 +79,7 @@ echo "  Node.js: $(node --version)"
 # ---------------------------------------------------------------------------
 # 2. Install uv
 # ---------------------------------------------------------------------------
-echo "[2/8] Installing uv..."
+echo "[2/9] Installing uv..."
 if ! command -v uv &> /dev/null; then
     curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
 fi
@@ -65,7 +89,7 @@ echo "  uv: $(uv --version)"
 # ---------------------------------------------------------------------------
 # 3. Clone TRELLIS.2 (upstream)
 # ---------------------------------------------------------------------------
-echo "[3/8] Setting up TRELLIS.2..."
+echo "[3/9] Setting up TRELLIS.2..."
 if [ -d "${TRELLIS_DIR}/.git" ]; then
     echo "  Repo already exists, pulling latest..."
     cd "$TRELLIS_DIR"
@@ -76,18 +100,32 @@ else
     git clone -b "$TRELLIS_BRANCH" "$TRELLIS_REPO" "$TRELLIS_DIR" --recursive
     cd "$TRELLIS_DIR"
 fi
+# Patch rembg loading to be optional (BiRefNet has transformers version issues)
+python3 -c "
+f = '$TRELLIS_DIR/trellis2/pipelines/trellis2_image_to_3d.py'
+src = open(f).read()
+old = \"pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args'])\"
+new = '''try:
+            pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args'])
+        except Exception as e:
+            print(f'Warning: Background removal model failed to load: {e}')
+            pipeline.rembg_model = None'''
+if old in src:
+    open(f, 'w').write(src.replace(old, new))
+    print('  Patched rembg loading to be optional')
+"
 
 # ---------------------------------------------------------------------------
 # 4. Phase 1: Build TRELLIS.2 venv + CUDA extensions
 # ---------------------------------------------------------------------------
 MARKER="${VENV_DIR}/.vastai_installed"
-echo "[4/8] Phase 1 — Python environment + CUDA extensions..."
+echo "[4/9] Phase 1 — Python environment + CUDA extensions..."
 
 if [ -f "$MARKER" ]; then
     echo "  Already built (found marker). Skipping."
 else
     cd "$TRELLIS_DIR"
-    uv venv --python 3.10 "$VENV_DIR"
+    uv venv --python 3.10 --clear "$VENV_DIR"
 
     export VIRTUAL_ENV="$VENV_DIR"
     export PATH="${VENV_DIR}/bin:$PATH"
@@ -98,9 +136,175 @@ else
     echo "  Installing build tools..."
     uv pip install ninja packaging psutil setuptools wheel
 
-    echo "  Compiling CUDA extensions (~10-15 min)..."
-    uv sync --no-build-isolation
+    # -- Basic dependencies (mirrors setup.sh --basic) --
+    echo "  Installing basic dependencies..."
+    uv pip install \
+        imageio imageio-ffmpeg tqdm easydict opencv-python-headless \
+        ninja trimesh transformers gradio==6.0.1 tensorboard pandas \
+        lpips zstandard pillow-simd kornia timm huggingface-hub
+    uv pip install git+https://github.com/EasternJournalist/utils3d.git@9a4eb15e4021b67b12c460c7057d642626897ec8
 
+    # -- CUDA extensions (mirrors setup.sh flags) --
+    echo "  Compiling CUDA extensions (~10-15 min)..."
+    EXTDIR="/tmp/extensions"
+    mkdir -p "$EXTDIR"
+
+    # Auto-detect GPU compute capability and limit parallel jobs
+    GPU_ARCH=$(python -c "import torch; cc = torch.cuda.get_device_capability(); print(f'{cc[0]}.{cc[1]}')" 2>/dev/null || echo "")
+    if [ -n "$GPU_ARCH" ]; then
+        export TORCH_CUDA_ARCH_LIST="$GPU_ARCH"
+        echo "  Detected GPU arch: sm_${GPU_ARCH//./_} (compiling only for this)"
+    fi
+    export MAX_JOBS="${MAX_JOBS:-2}"
+    echo "  Max parallel jobs: $MAX_JOBS"
+
+    echo "    [1/5] nvdiffrast..."
+    git clone -b v0.4.0 https://github.com/NVlabs/nvdiffrast.git "$EXTDIR/nvdiffrast" 2>/dev/null || true
+    uv pip install "$EXTDIR/nvdiffrast" --no-build-isolation
+
+    echo "    [2/5] nvdiffrec (renderutils)..."
+    git clone -b renderutils https://github.com/JeffreyXiang/nvdiffrec.git "$EXTDIR/nvdiffrec" 2>/dev/null || true
+    uv pip install "$EXTDIR/nvdiffrec" --no-build-isolation
+
+    echo "    [3/5] CuMesh..."
+    git clone --recursive https://github.com/JeffreyXiang/CuMesh.git "$EXTDIR/CuMesh" 2>/dev/null || true
+
+    # Patch ALL CuMesh sources for CUDA 13.2 CCCL/CUB compatibility.
+    # Old CUB accepted in-place 4-arg ExclusiveSum/InclusiveSum:
+    #   ExclusiveSum(temp, bytes, data, N)
+    # CUDA 13.2 requires 5-arg with separate in/out:
+    #   ExclusiveSum(temp, bytes, d_in, d_out, N)
+    # This affects shared.h (compress_ids) and clean_up.cu (remove_unreferenced_vertices, fill_holes)
+    echo "      Patching CuMesh for CUDA 13.2 CUB compatibility..."
+    CUMESH_PATCH="$EXTDIR/cumesh_cuda13_patch.py"
+    cat > "$CUMESH_PATCH" << 'PYEOF'
+"""Patch CuMesh for CUDA 13.2 CCCL/CUB compatibility.
+
+Old CUB accepted 4-arg in-place ExclusiveSum/InclusiveSum:
+    DeviceScan::ExclusiveSum(temp, bytes, data, N)
+CUDA 13.2 requires 5-arg with separate in/out:
+    DeviceScan::ExclusiveSum(temp, bytes, d_in, d_out, N)
+"""
+import os, sys, glob
+
+def find_call_end(src, start):
+    """Find matching closing paren, returning index after ')'."""
+    depth = 0
+    i = start
+    while i < len(src):
+        if src[i] == '(':
+            depth += 1
+        elif src[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+def split_args(text):
+    """Split text by top-level commas (respecting nested parens)."""
+    args = []
+    depth = 0
+    current = []
+    for ch in text:
+        if ch == '(' :
+            depth += 1
+            current.append(ch)
+        elif ch == ')':
+            depth -= 1
+            current.append(ch)
+        elif ch == ',' and depth == 0:
+            args.append(''.join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        args.append(''.join(current).strip())
+    return args
+
+def patch_file(fpath):
+    with open(fpath) as f:
+        src = f.read()
+    orig = src
+    fixes = 0
+
+    for func_name in ["ExclusiveSum", "InclusiveSum"]:
+        marker = f"cub::DeviceScan::{func_name}("
+        offset = 0
+        while True:
+            idx = src.find(marker, offset)
+            if idx == -1:
+                break
+            # Find the opening paren
+            paren_start = idx + len(marker) - 1  # index of '('
+            call_end = find_call_end(src, paren_start)
+            if call_end == -1:
+                offset = idx + 1
+                continue
+
+            # Extract args between parens
+            inner = src[paren_start + 1 : call_end - 1]
+            args = split_args(inner)
+
+            if len(args) == 4:
+                # 4-arg in-place call -> 5-arg with separate in/out
+                # args: [temp_storage, temp_bytes, data, count]
+                # becomes: [temp_storage, temp_bytes, data, data, (int)count]
+                data_arg = args[2]
+                count_arg = args[3]
+                new_inner = f"{args[0]}, {args[1]},\n        {data_arg}, {data_arg},\n        static_cast<int>({count_arg})"
+                src = src[:paren_start + 1] + new_inner + src[call_end - 1:]
+                fixes += 1
+                print(f"      Fixed {func_name} at offset {idx} ({len(args)} args -> 5 args)")
+
+            offset = idx + 1
+
+    if src != orig:
+        with open(fpath, 'w') as f:
+            f.write(src)
+        return fixes
+    return 0
+
+src_dir = sys.argv[1]
+total = 0
+for fpath in glob.glob(os.path.join(src_dir, "src", "**", "*"), recursive=True):
+    if fpath.endswith((".cu", ".h", ".cuh")):
+        n = patch_file(fpath)
+        if n:
+            print(f"      Patched {os.path.basename(fpath)}: {n} fixes")
+            total += n
+
+# Also check files directly in src/ (not just subdirectories)
+for fpath in glob.glob(os.path.join(src_dir, "src", "*")):
+    if fpath.endswith((".cu", ".h", ".cuh")):
+        n = patch_file(fpath)
+        if n:
+            print(f"      Patched {os.path.basename(fpath)}: {n} fixes")
+            total += n
+
+print(f"      Total fixes applied: {total}")
+PYEOF
+    python3 "$CUMESH_PATCH" "$EXTDIR/CuMesh"
+
+    # Remove .git so uv treats this as a plain local package, not a VCS source.
+    # Without this, uv re-fetches a clean checkout into its cache and ignores our patches!
+    rm -rf "$EXTDIR/CuMesh/.git"
+
+    uv pip install "$EXTDIR/CuMesh" --no-build-isolation
+
+    echo "    [4/5] FlexGEMM..."
+    git clone --recursive https://github.com/JeffreyXiang/FlexGEMM.git "$EXTDIR/FlexGEMM" 2>/dev/null || true
+    rm -rf "$EXTDIR/FlexGEMM/.git"
+    uv pip install "$EXTDIR/FlexGEMM" --no-build-isolation
+
+    echo "    [5/5] o-voxel..."
+    cp -r "$TRELLIS_DIR/o-voxel" "$EXTDIR/o-voxel" 2>/dev/null || true
+    # Remove git deps for cumesh/flex_gemm from o-voxel's pyproject.toml
+    # (we already built and installed them from patched local clones)
+    sed -i '/cumesh @/d; /flex_gemm @/d' "$EXTDIR/o-voxel/pyproject.toml"
+    uv pip install "$EXTDIR/o-voxel" --no-build-isolation
+
+    # -- NVIDIA runtime packages --
     echo "  Installing NVIDIA runtime packages..."
     uv pip install \
         nvidia-cublas-cu12 \
@@ -128,7 +332,7 @@ export PATH="${VENV_DIR}/bin:$PATH"
 # ---------------------------------------------------------------------------
 # 5. Clone trellis2-webui (this repo)
 # ---------------------------------------------------------------------------
-echo "[5/8] Setting up trellis2-webui..."
+echo "[5/9] Setting up trellis2-webui..."
 if [ -d "${WEBUI_DIR}/.git" ]; then
     echo "  Repo already exists, pulling latest..."
     cd "$WEBUI_DIR"
@@ -142,14 +346,14 @@ fi
 # ---------------------------------------------------------------------------
 # 6. Phase 2: Install webui dependencies into the shared venv
 # ---------------------------------------------------------------------------
-echo "[6/8] Phase 2 — Installing WebUI dependencies..."
+echo "[6/9] Phase 2 — Installing WebUI dependencies..."
 cd "$WEBUI_DIR"
 uv pip install -e .
 
 # ---------------------------------------------------------------------------
 # 7. Download model
 # ---------------------------------------------------------------------------
-echo "[7/8] Checking model..."
+echo "[7/9] Checking model..."
 if [ -d "${MODEL_DIR}" ] && [ -f "${MODEL_DIR}/config.json" ]; then
     echo "  Model already downloaded."
 else
@@ -159,9 +363,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Build frontend + start server
+# 8. Build frontend
 # ---------------------------------------------------------------------------
-echo "[8/8] Building frontend and starting server..."
+echo "[8/9] Building frontend..."
 cd "${WEBUI_DIR}/webui"
 if [ -d "dist" ] && [ "dist/index.html" -nt "index.html" ]; then
     echo "  Frontend already built."
@@ -171,19 +375,102 @@ else
     echo "  ✅ Frontend built."
 fi
 
-cd "$WEBUI_DIR"
+# ---------------------------------------------------------------------------
+# 9. Register WebUI as Supervisor service
+# ---------------------------------------------------------------------------
+echo "[9/9] Registering WebUI as Supervisor service..."
 
-export TRELLIS_MODEL_PATH="$MODEL_DIR"
+SUPERVISOR_CONF="/etc/supervisor/conf.d/trellis-webui.conf"
+WEBUI_LAUNCHER="/opt/supervisor-scripts/trellis-webui.sh"
+
+# Create launcher script
+mkdir -p /opt/supervisor-scripts
+cat > "$WEBUI_LAUNCHER" << 'LAUNCHER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Activate the TRELLIS venv
+export VIRTUAL_ENV="/workspace/TRELLIS.2/.venv"
+export PATH="${VIRTUAL_ENV}/bin:$PATH"
+
+# Environment
+export TRELLIS_MODEL_PATH="/workspace/models/TRELLIS.2-4B"
+export PYTHONPATH="/workspace/TRELLIS.2:${PYTHONPATH:-}"
 export ATTN_BACKEND="sdpa"
+export SPARSE_ATTN_BACKEND="sdpa"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export OPENCV_IO_ENABLE_OPENEXR="1"
 
+PORT="${TRELLIS_PORT:-8000}"
+
+# Patch HF-cached birefnet.py: torch.linspace runs on meta device due to
+# PyTorch's device context manager; force CPU to avoid .item() crash.
+# (File is downloaded on first run; supervisor auto-restart applies the fix)
+for f in /workspace/.hf_home/modules/transformers_modules/briaai/RMBG*/*/birefnet.py; do
+    [ -f "$f" ] && sed -i "s/torch.linspace(0, drop_path_rate, sum(depths))/torch.linspace(0, drop_path_rate, sum(depths), device='cpu')/g" "$f"
+done 2>/dev/null || true
+
+cd /workspace/trellis2-webui
+exec python -m uvicorn app:app --host 0.0.0.0 --port "$PORT"
+LAUNCHER_EOF
+chmod +x "$WEBUI_LAUNCHER"
+
+# Create Supervisor config
+cat > "$SUPERVISOR_CONF" << EOF
+[program:trellis-webui]
+environment=PROC_NAME="%(program_name)s"
+command=${WEBUI_LAUNCHER}
+directory=/workspace/trellis2-webui
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+redirect_stderr=true
+startsecs=10
+stopwaitsecs=30
+EOF
+
+# Add to Instance Portal
+PORTAL_YAML="/etc/portal.yaml"
+if [ -f "$PORTAL_YAML" ] && ! grep -q "TRELLIS.2 WebUI" "$PORTAL_YAML"; then
+    python3 -c "
+import yaml, sys
+portal = '$PORTAL_YAML'
+with open(portal) as f:
+    data = yaml.safe_load(f) or []
+entry = {
+    'name': 'TRELLIS.2 WebUI',
+    'listen_port': ${PORT},
+    'proxy_port': 1${PORT},
+    'metrics_port': 0,
+    'custom_proxy_url': '',
+    'proxy_active': True,
+    'path': '/'
+}
+if isinstance(data, list):
+    data.append(entry)
+elif isinstance(data, dict):
+    data['trellis-webui'] = entry
+else:
+    data = [entry]
+with open(portal, 'w') as f:
+    yaml.dump(data, f, default_flow_style=False)
+print('  Added TRELLIS.2 WebUI to portal.yaml')
+"
+    # Restart Caddy to pick up the new portal entry
+    supervisorctl restart caddy 2>/dev/null || true
+fi
+
+# Load the new service
+supervisorctl reread
+supervisorctl update
+
 echo ""
 echo "========================================"
-echo "  TRELLIS.2 WebUI starting on port ${PORT}"
-echo "  Model: ${MODEL_DIR}"
+echo "  TRELLIS.2 WebUI registered as Supervisor service"
+echo "  Port: ${PORT}"
+echo "  Status: supervisorctl status trellis-webui"
+echo "  Logs:   supervisorctl tail -f trellis-webui"
 echo "  $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 echo "========================================"
 echo ""
-
-exec python -m uvicorn app:app --host 0.0.0.0 --port "$PORT"
