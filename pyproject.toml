@@ -1,0 +1,22 @@
+[project]
+name = "trellis2-webui"
+version = "0.1.0"
+description = "Web UI for TRELLIS.2 image-to-3D generation"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    # Web framework
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    # Image / 3D processing (used directly by the app)
+    "opencv-python-headless",
+    "trimesh",
+    "pillow",
+    "numpy",
+    "torch",
+    "imageio",
+    "imageio-ffmpeg",
+]
+
+[project.scripts]
+trellis2-webui = "app:main"

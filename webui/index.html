@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TRELLIS.2 — Image to 3D</title>
+  <meta name="description" content="Generate high-quality 3D assets from images using TRELLIS.2 with multi-view support" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/index.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- ====== Header ====== -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="logo-glow"></div>
+        <h1>TRELLIS<span class="accent">.2</span></h1>
+        <span class="header-badge">Image → 3D</span>
+      </div>
+    </header>
+
+    <!-- ====== Tab Bar ====== -->
+    <nav class="tab-bar" id="tabBar">
+      <button class="tab-btn active" data-tab="single">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        <span>Image to 3D</span>
+      </button>
+      <button class="tab-btn" data-tab="multiview">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="9" height="9" rx="1"/><rect x="13" y="2" width="9" height="9" rx="1"/><rect x="2" y="13" width="9" height="9" rx="1"/><rect x="13" y="13" width="9" height="9" rx="1"/></svg>
+        <span>Multi-View</span>
+        <span class="badge-experimental">EXPERIMENTAL</span>
+      </button>
+      <button class="tab-btn" data-tab="texturing">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        <span>Re-Texturing</span>
+      </button>
+    </nav>
+
+    <!-- ====== Main Content ====== -->
+    <main class="main-content">
+      <!-- ===== Left Panel ===== -->
+      <aside class="panel panel-left glass">
+        <!-- Single Image Upload -->
+        <section class="tab-content active" data-tab="single">
+          <h2 class="panel-title">Input Image</h2>
+          <div class="upload-zone" id="singleUpload">
+            <input type="file" id="singleFileInput" accept="image/*" hidden />
+            <div class="upload-placeholder" id="singlePlaceholder">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              <p>Drop image here or <span class="accent-link">browse</span></p>
+              <span class="upload-hint">PNG, JPG, WEBP — ideally with alpha mask</span>
+            </div>
+            <img id="singlePreview" class="upload-preview" alt="Preview" />
+          </div>
+        </section>
+
+        <!-- Multi-View Upload -->
+        <section class="tab-content" data-tab="multiview">
+          <h2 class="panel-title">Multi-View Images <span class="count-badge" id="mvCount">0 / 6</span></h2>
+          <div class="mv-grid" id="mvGrid">
+            <div class="mv-slot" data-index="0">
+              <input type="file" accept="image/*" hidden />
+              <div class="mv-placeholder"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>View 1</span></div>
+              <img class="mv-preview" alt="" />
+            </div>
+            <div class="mv-slot" data-index="1">
+              <input type="file" accept="image/*" hidden />
+              <div class="mv-placeholder"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>View 2</span></div>
+              <img class="mv-preview" alt="" />
+            </div>
+            <div class="mv-slot" data-index="2">
+              <input type="file" accept="image/*" hidden />
+              <div class="mv-placeholder"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>View 3</span></div>
+              <img class="mv-preview" alt="" />
+            </div>
+            <div class="mv-slot" data-index="3">
+              <input type="file" accept="image/*" hidden />
+              <div class="mv-placeholder"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>View 4</span></div>
+              <img class="mv-preview" alt="" />
+            </div>
+            <div class="mv-slot" data-index="4">
+              <input type="file" accept="image/*" hidden />
+              <div class="mv-placeholder"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>View 5</span></div>
+              <img class="mv-preview" alt="" />
+            </div>
+            <div class="mv-slot" data-index="5">
+              <input type="file" accept="image/*" hidden />
+              <div class="mv-placeholder"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>View 6</span></div>
+              <img class="mv-preview" alt="" />
+            </div>
+          </div>
+        </section>
+
+        <!-- Re-Texturing Upload -->
+        <section class="tab-content" data-tab="texturing">
+          <h2 class="panel-title">Mesh &amp; Reference</h2>
+          <div class="upload-zone upload-zone-sm" id="meshUpload">
+            <input type="file" id="meshFileInput" accept=".ply,.obj,.glb,.gltf" hidden />
+            <div class="upload-placeholder" id="meshPlaceholder">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              <p>Drop mesh file (<code>.ply .obj .glb</code>)</p>
+            </div>
+            <div id="meshInfo" class="file-info" hidden><span id="meshFileName"></span></div>
+          </div>
+          <div class="upload-zone upload-zone-sm" id="texImageUpload" style="margin-top: 12px;">
+            <input type="file" id="texImageInput" accept="image/*" hidden />
+            <div class="upload-placeholder" id="texImagePlaceholder">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.4"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              <p>Drop reference image</p>
+            </div>
+            <img id="texImagePreview" class="upload-preview" alt="Preview" />
+          </div>
+        </section>
+
+        <!-- ===== Shared Settings ===== -->
+        <div class="settings-section">
+          <!-- Quality Preset -->
+          <div class="setting-row">
+            <label>Quality Preset</label>
+            <div class="preset-group" id="presetGroup">
+              <button class="preset-btn" data-preset="fast" title="12 steps, lower guidance — fastest generation">
+                <span class="preset-icon">⚡</span>
+                <span class="preset-label">Fast</span>
+              </button>
+              <button class="preset-btn active" data-preset="balanced" title="20 steps, balanced guidance — recommended">
+                <span class="preset-icon">⚖️</span>
+                <span class="preset-label">Balanced</span>
+              </button>
+              <button class="preset-btn" data-preset="high" title="30 steps, higher guidance — detailed output">
+                <span class="preset-icon">✨</span>
+                <span class="preset-label">HQ</span>
+              </button>
+              <button class="preset-btn" data-preset="max" title="50 steps, maximum quality — slow but best results">
+                <span class="preset-icon">💎</span>
+                <span class="preset-label">Max</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Surface Type -->
+          <div class="setting-row">
+            <label>Surface Type</label>
+            <div class="surface-toggle" id="surfaceToggle">
+              <button class="surface-btn active" data-surface="hard" title="Mechanical, architectural, hard-edge objects — higher guidance">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="1"/></svg>
+                <span>Hard Surface</span>
+              </button>
+              <button class="surface-btn" data-surface="organic" title="Characters, plants, organic forms — softer guidance">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+                <span>Organic</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <label>Resolution</label>
+            <div class="radio-group" id="resolutionGroup">
+              <button class="radio-btn" data-value="512">512</button>
+              <button class="radio-btn active" data-value="1024">1024</button>
+              <button class="radio-btn" data-value="1536">1536</button>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <label>Seed</label>
+            <div class="seed-row">
+              <input type="number" id="seedInput" class="input-field" value="0" min="0" max="2147483647" />
+              <label class="checkbox-label">
+                <input type="checkbox" id="randomizeSeed" checked />
+                <span class="checkmark"></span>
+                Random
+              </label>
+            </div>
+          </div>
+
+          <!-- Advanced Settings -->
+          <details class="advanced-details">
+            <summary>Advanced Settings</summary>
+            <div class="advanced-inner">
+              <!-- Stage 1 -->
+              <h3 class="stage-label">Stage 1: Sparse Structure</h3>
+              <div class="slider-grid">
+                <div class="slider-item">
+                  <label>Guidance <span class="slider-val" id="ss_gs_val">7.5</span></label>
+                  <input type="range" id="ss_gs" min="1" max="10" step="0.1" value="7.5" />
+                </div>
+                <div class="slider-item">
+                  <label>Rescale <span class="slider-val" id="ss_gr_val">0.7</span></label>
+                  <input type="range" id="ss_gr" min="0" max="1" step="0.01" value="0.7" />
+                </div>
+                <div class="slider-item">
+                  <label>Steps <span class="slider-val" id="ss_steps_val">12</span></label>
+                  <input type="range" id="ss_steps" min="1" max="50" step="1" value="12" />
+                </div>
+                <div class="slider-item">
+                  <label>Rescale T <span class="slider-val" id="ss_rt_val">5.0</span></label>
+                  <input type="range" id="ss_rt" min="1" max="6" step="0.1" value="5.0" />
+                </div>
+              </div>
+
+              <!-- Stage 2 -->
+              <h3 class="stage-label">Stage 2: Shape</h3>
+              <div class="slider-grid">
+                <div class="slider-item">
+                  <label>Guidance <span class="slider-val" id="shape_gs_val">7.5</span></label>
+                  <input type="range" id="shape_gs" min="1" max="10" step="0.1" value="7.5" />
+                </div>
+                <div class="slider-item">
+                  <label>Rescale <span class="slider-val" id="shape_gr_val">0.5</span></label>
+                  <input type="range" id="shape_gr" min="0" max="1" step="0.01" value="0.5" />
+                </div>
+                <div class="slider-item">
+                  <label>Steps <span class="slider-val" id="shape_steps_val">12</span></label>
+                  <input type="range" id="shape_steps" min="1" max="50" step="1" value="12" />
+                </div>
+                <div class="slider-item">
+                  <label>Rescale T <span class="slider-val" id="shape_rt_val">3.0</span></label>
+                  <input type="range" id="shape_rt" min="1" max="6" step="0.1" value="3.0" />
+                </div>
+              </div>
+
+              <!-- Stage 3 -->
+              <h3 class="stage-label">Stage 3: Texture</h3>
+              <div class="slider-grid">
+                <div class="slider-item">
+                  <label>Guidance <span class="slider-val" id="tex_gs_val">1.0</span></label>
+                  <input type="range" id="tex_gs" min="1" max="10" step="0.1" value="1.0" />
+                </div>
+                <div class="slider-item">
+                  <label>Rescale <span class="slider-val" id="tex_gr_val">0.0</span></label>
+                  <input type="range" id="tex_gr" min="0" max="1" step="0.01" value="0.0" />
+                </div>
+                <div class="slider-item">
+                  <label>Steps <span class="slider-val" id="tex_steps_val">12</span></label>
+                  <input type="range" id="tex_steps" min="1" max="50" step="1" value="12" />
+                </div>
+                <div class="slider-item">
+                  <label>Rescale T <span class="slider-val" id="tex_rt_val">3.0</span></label>
+                  <input type="range" id="tex_rt" min="1" max="6" step="0.1" value="3.0" />
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <!-- Export Settings -->
+          <details class="advanced-details" id="exportSettings">
+            <summary>Export Settings</summary>
+            <div class="advanced-inner">
+              <div class="slider-grid">
+                <div class="slider-item">
+                  <label>Decimation <span class="slider-val" id="dec_val">500K</span></label>
+                  <input type="range" id="decimationTarget" min="100000" max="1000000" step="10000" value="500000" />
+                </div>
+                <div class="slider-item">
+                  <label>Texture Size <span class="slider-val" id="texsize_val">2048</span></label>
+                  <input type="range" id="textureSize" min="1024" max="4096" step="1024" value="2048" />
+                </div>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <!-- Generate Button -->
+        <button class="btn-generate" id="generateBtn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          <span>Generate</span>
+        </button>
+
+        <!-- Examples -->
+        <div class="examples-section" id="examplesSection">
+          <h3 class="stage-label">Examples</h3>
+          <div class="examples-grid" id="examplesGrid"></div>
+        </div>
+      </aside>
+
+      <!-- ===== Right Panel: 3D Viewer ===== -->
+      <section class="panel panel-right glass">
+        <!-- Progress Overlay -->
+        <div class="progress-overlay" id="progressOverlay" hidden>
+          <div class="progress-ring-container">
+            <svg class="progress-ring" width="120" height="120">
+              <circle class="progress-ring-bg" cx="60" cy="60" r="52" />
+              <circle class="progress-ring-fill" id="progressRingFill" cx="60" cy="60" r="52" />
+            </svg>
+            <span class="progress-percent" id="progressPercent">0%</span>
+          </div>
+          <p class="progress-stage" id="progressStage">Initializing…</p>
+        </div>
+
+        <!-- Mode Switch Bar -->
+        <div class="viewer-mode-bar" id="viewerModeBar" hidden>
+          <div class="mode-pills" id="modePills">
+            <button class="mode-pill active" data-mode="preview" title="Preview renders">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+              Preview
+            </button>
+            <button class="mode-pill" data-mode="3d" title="Interactive 3D viewer">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              3D View
+            </button>
+          </div>
+        </div>
+
+        <!-- Preview Viewer -->
+        <div class="preview-viewer" id="previewViewer">
+          <div class="empty-state" id="emptyState">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            <p>Upload an image and click <strong>Generate</strong></p>
+          </div>
+          <img id="previewImage" class="viewer-image" alt="3D Preview" hidden />
+          <!-- Render mode selector -->
+          <div class="render-modes" id="renderModes" hidden>
+            <button class="render-mode-btn active" data-render="shaded_forest" title="HDRI Forest">🌲</button>
+            <button class="render-mode-btn" data-render="shaded_sunset" title="HDRI Sunset">🌅</button>
+            <button class="render-mode-btn" data-render="shaded_courtyard" title="HDRI Courtyard">🏛️</button>
+            <button class="render-mode-btn" data-render="normal" title="Normal">🔵</button>
+            <button class="render-mode-btn" data-render="clay" title="Clay">⚪</button>
+            <button class="render-mode-btn" data-render="base_color" title="Base Color">🎨</button>
+          </div>
+          <!-- Angle slider -->
+          <div class="angle-slider-row" id="angleSliderRow" hidden>
+            <input type="range" id="angleSlider" min="0" max="7" step="1" value="3" class="angle-slider" />
+          </div>
+        </div>
+
+        <!-- Three.js Viewer -->
+        <div class="three-viewer" id="threeViewer" hidden>
+          <canvas id="threeCanvas"></canvas>
+        </div>
+
+        <!-- Extract/Download Bar -->
+        <div class="action-bar" id="actionBar" hidden>
+          <button class="btn-action" id="extractBtn">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Extract &amp; Download GLB
+          </button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/main.js"></script>
+</body>
+</html>
