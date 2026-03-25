@@ -21,7 +21,7 @@ echo "Installing trellis2-webui into the TRELLIS.2 environment..."
 source "${VENV_DIR}/bin/activate"
 
 # Install webui dependencies (fastapi, uvicorn, etc.)
-uv pip install -e .
+uv pip install -e . --no-build-isolation
 
 echo ""
 echo "========================================"
