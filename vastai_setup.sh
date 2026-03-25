@@ -21,6 +21,7 @@ set -eo pipefail
 # ---------------------------------------------------------------------------
 TRELLIS_REPO="${TRELLIS_REPO_URL:-https://github.com/microsoft/TRELLIS.2.git}"
 TRELLIS_BRANCH="${TRELLIS_REPO_BRANCH:-main}"
+TRELLIS_COMMIT="${TRELLIS_COMMIT:-5565d240c4a494caaf9ece7a554542b76ffa36d3}"  # pinned known-good
 WEBUI_REPO="${WEBUI_REPO_URL:-https://github.com/matatratata/trellis2-webui.git}"
 WEBUI_BRANCH="${WEBUI_REPO_BRANCH:-main}"
 
@@ -99,6 +100,7 @@ else
     echo "  Cloning ${TRELLIS_REPO} (branch: ${TRELLIS_BRANCH})..."
     git clone -b "$TRELLIS_BRANCH" "$TRELLIS_REPO" "$TRELLIS_DIR" --recursive
     cd "$TRELLIS_DIR"
+    git checkout "$TRELLIS_COMMIT"  # pin to known-good commit
 fi
 # Patch rembg loading to be optional (BiRefNet has transformers version issues)
 python3 -c "
@@ -168,6 +170,7 @@ else
 
     echo "    [3/5] CuMesh..."
     git clone --recursive https://github.com/JeffreyXiang/CuMesh.git "$EXTDIR/CuMesh" 2>/dev/null || true
+    cd "$EXTDIR/CuMesh" && git checkout cf1a2f07304b5fe388ed86a16e4a0474599df914 && cd -
 
     # Patch ALL CuMesh sources for CUDA 13.2 CCCL/CUB compatibility.
     # Old CUB accepted in-place 4-arg ExclusiveSum/InclusiveSum:
@@ -294,6 +297,7 @@ PYEOF
 
     echo "    [4/5] FlexGEMM..."
     git clone --recursive https://github.com/JeffreyXiang/FlexGEMM.git "$EXTDIR/FlexGEMM" 2>/dev/null || true
+    cd "$EXTDIR/FlexGEMM" && git checkout 9f2f050396be3cc48894d15ce308e9672a07c677 && cd -
     rm -rf "$EXTDIR/FlexGEMM/.git"
     uv pip install "$EXTDIR/FlexGEMM" --no-build-isolation
 
