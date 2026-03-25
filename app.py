@@ -153,8 +153,9 @@ async def startup():
             MODEL_PATH, config_file="texturing_pipeline.json"
         )
         tex_pipeline.cuda()
-    except Exception:
-        print("⚠ Texturing pipeline not available (missing texturing_pipeline.json)")
+    except Exception as e:
+        print(f"⚠ Texturing pipeline not available: {e}")
+        traceback.print_exc()
         tex_pipeline = None
 
     envmap_data = {}

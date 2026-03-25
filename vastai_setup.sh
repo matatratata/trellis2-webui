@@ -365,16 +365,46 @@ cd "$WEBUI_DIR"
 uv pip install -e .
 
 # ---------------------------------------------------------------------------
-# 7. Download model
+# 7. Download models
 # ---------------------------------------------------------------------------
-echo "[7/9] Checking model..."
+echo "[7/9] Checking models..."
+
+# 7a. TRELLIS.2-4B main model
 if [ -d "${MODEL_DIR}" ] && [ -f "${MODEL_DIR}/config.json" ]; then
-    echo "  Model already downloaded."
+    echo "  TRELLIS.2-4B already downloaded."
 else
     echo "  Downloading TRELLIS.2-4B from HuggingFace (~16 GB)..."
     python -c "from huggingface_hub import snapshot_download; snapshot_download('microsoft/TRELLIS.2-4B', local_dir='${MODEL_DIR}'${HF_TOKEN:+, token='${HF_TOKEN}'})"
-    echo "  ✅ Model downloaded."
+    echo "  ✅ TRELLIS.2-4B downloaded."
 fi
+
+# 7b. DINOv3 vision encoder (needed by both main + texturing pipelines)
+DINOV3_DIR="/workspace/models/dinov3-vitl16-pretrain-lvd1689m"
+if [ -d "${DINOV3_DIR}" ] && [ -f "${DINOV3_DIR}/model.safetensors" ]; then
+    echo "  DINOv3 already downloaded."
+else
+    echo "  Downloading DINOv3 ViT-L/16 (~1.2 GB)..."
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/dinov3-vitl16-pretrain-lvd1689m', local_dir='${DINOV3_DIR}'${HF_TOKEN:+, token='${HF_TOKEN}'})"
+    echo "  ✅ DINOv3 downloaded."
+fi
+
+# 7c. Patch pipeline configs to use the Vast.ai model path for DINOv3
+echo "  Patching pipeline configs for DINOv3 path..."
+for cfg in "${MODEL_DIR}/pipeline.json" "${MODEL_DIR}/texturing_pipeline.json"; do
+    if [ -f "$cfg" ]; then
+        python3 -c "
+import json
+with open('$cfg') as f:
+    data = json.load(f)
+model_name = data.get('args', {}).get('image_cond_model', {}).get('args', {}).get('model_name', '')
+if model_name != '${DINOV3_DIR}' and 'dinov3' in model_name.lower():
+    data['args']['image_cond_model']['args']['model_name'] = '${DINOV3_DIR}'
+    with open('$cfg', 'w') as f:
+        json.dump(data, f, indent=4)
+    print(f'  Patched {\"$cfg\".split(\"/\")[-1]}')
+"
+    fi
+done
 
 # ---------------------------------------------------------------------------
 # 8. Build frontend
