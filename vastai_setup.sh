@@ -103,8 +103,13 @@ else
     git checkout "$TRELLIS_COMMIT"  # pin to known-good commit
 fi
 # Patch rembg loading to be optional (BiRefNet has transformers version issues)
-python3 -c "
-f = '$TRELLIS_DIR/trellis2/pipelines/trellis2_image_to_3d.py'
+# Applies to BOTH the main pipeline and the texturing pipeline
+for pyfile in trellis2_image_to_3d.py trellis2_texturing.py; do
+    python3 -c "
+f = '$TRELLIS_DIR/trellis2/pipelines/$pyfile'
+import os
+if not os.path.exists(f):
+    exit(0)
 src = open(f).read()
 old = \"pipeline.rembg_model = getattr(rembg, args['rembg_model']['name'])(**args['rembg_model']['args'])\"
 new = '''try:
@@ -114,8 +119,9 @@ new = '''try:
             pipeline.rembg_model = None'''
 if old in src:
     open(f, 'w').write(src.replace(old, new))
-    print('  Patched rembg loading to be optional')
+    print(f'  Patched rembg in {\"$pyfile\"} to be optional')
 "
+done
 
 # ---------------------------------------------------------------------------
 # 4. Phase 1: Build TRELLIS.2 venv + CUDA extensions

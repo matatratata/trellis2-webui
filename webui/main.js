@@ -15,6 +15,7 @@ const state = {
   currentAngle: 3,
   glbUrl: null,
   generating: false,
+  extracting: false,
   currentPreset: 'balanced',
   currentSurface: 'hard',
 };
@@ -564,7 +565,65 @@ function setViewerMode(mode) {
     $('#angleSliderRow').hidden = true;
     if (state.glbUrl) {
       loadGlbInViewer(state.glbUrl);
+    } else if (state.sessionId) {
+      // Auto-extract GLB for the 3D viewer
+      extractGlbForViewer();
     }
+  }
+}
+
+// Extract GLB silently (no download) and load into 3D viewer
+async function extractGlbForViewer() {
+  if (state.extracting) return; // prevent double-extraction
+  state.extracting = true;
+
+  // Show loading state in the viewer
+  showViewerLoading(true);
+
+  const formData = new FormData();
+  formData.append('session_id', state.sessionId);
+  formData.append('decimation_target', $('#decimationTarget').value);
+  formData.append('texture_size', $('#textureSize').value);
+
+  try {
+    const res = await fetch('/api/extract-glb', { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Extraction failed');
+    }
+    const blob = await res.blob();
+    state.glbUrl = URL.createObjectURL(blob);
+    showViewerLoading(false);
+    loadGlbInViewer(state.glbUrl);
+  } catch (err) {
+    showViewerLoading(false);
+    showViewerError(err.message);
+  } finally {
+    state.extracting = false;
+  }
+}
+
+function showViewerLoading(show) {
+  let overlay = $('#viewerLoadingOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'viewerLoadingOverlay';
+    overlay.className = 'viewer-loading-overlay';
+    overlay.innerHTML = `
+      <div class="viewer-loading-spinner"></div>
+      <p class="viewer-loading-text">Extracting 3D mesh…</p>
+    `;
+    $('#threeViewer').appendChild(overlay);
+  }
+  overlay.hidden = !show;
+}
+
+function showViewerError(message) {
+  let overlay = $('#viewerLoadingOverlay');
+  if (overlay) {
+    overlay.innerHTML = `<p class="viewer-loading-text" style="color: var(--danger)">⚠ ${message}</p>`;
+    overlay.hidden = false;
+    setTimeout(() => { overlay.hidden = true; }, 4000);
   }
 }
 
