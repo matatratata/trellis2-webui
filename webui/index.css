@@ -984,6 +984,7 @@ input[type="range"]::-webkit-slider-thumb:hover {
   padding: 16px 24px;
   border-top: 1px solid var(--border);
   display: flex;
+  gap: 10px;
   justify-content: center;
   flex-shrink: 0;
 }
@@ -1016,16 +1017,28 @@ input[type="range"]::-webkit-slider-thumb:hover {
   cursor: not-allowed;
 }
 
+.btn-action-secondary {
+  background: transparent;
+  border-style: dashed;
+}
+
+.btn-action-secondary:hover {
+  border-style: solid;
+}
+
 /* ---------- Three.js Viewer ---------- */
 .three-viewer {
   flex: 1;
   position: relative;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .three-viewer canvas {
+  position: absolute;
+  inset: 0;
   width: 100% !important;
   height: 100% !important;
-  border-radius: 0;
 }
 
 /* Viewer Loading Overlay */

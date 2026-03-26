@@ -11,6 +11,7 @@ import json
 import io
 import base64
 import traceback
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
@@ -484,6 +485,153 @@ async def extract_glb(
                 pass
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# API: Extract OBJ (ZIP with .obj + .mtl + textures)
+# ---------------------------------------------------------------------------
+@app.post("/api/extract-obj")
+async def extract_obj(
+    session_id: str = Form(...),
+    decimation_target: int = Form(500000),
+    texture_size: int = Form(2048),
+):
+    if session_id not in latent_store:
+        raise HTTPException(status_code=404, detail="Session not found. Generate a model first.")
+
+    state = latent_store[session_id]
+    session_dir = get_session_dir(session_id)
+
+    async with gpu_lock:
+        try:
+            shape_slat, tex_slat, res = unpack_state(state)
+            mesh = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: pipeline.decode_latent(shape_slat, tex_slat, res)[0]
+            )
+
+            # Free cuda:0 to release VRAM
+            pipeline.cpu()
+            if tex_pipeline is not None:
+                tex_pipeline.cpu()
+            for k, v in envmap.items():
+                v.image = v.image.cpu()
+                if hasattr(v, '_nvdiffrec_envlight'):
+                    del v._nvdiffrec_envlight
+            del shape_slat, tex_slat
+            import gc; gc.collect()
+            torch.cuda.empty_cache()
+
+            def do_export():
+                dev = MESH_DEVICE
+                verts = mesh.vertices.to(dev) if hasattr(mesh.vertices, 'to') else mesh.vertices
+                faces = mesh.faces.to(dev) if hasattr(mesh.faces, 'to') else mesh.faces
+                attrs = mesh.attrs.to(dev) if hasattr(mesh.attrs, 'to') else mesh.attrs
+                coords = mesh.coords.to(dev) if hasattr(mesh.coords, 'to') else mesh.coords
+
+                print(f"[OBJ] Exporting on {dev}, decimation={decimation_target}, tex_size={texture_size}")
+                with torch.cuda.device(dev):
+                    textured_mesh = o_voxel.postprocess.to_glb(
+                        vertices=verts,
+                        faces=faces,
+                        attr_volume=attrs,
+                        coords=coords,
+                        attr_layout=pipeline.pbr_attr_layout,
+                        grid_size=res,
+                        aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+                        decimation_target=decimation_target,
+                        texture_size=texture_size,
+                        remesh=True,
+                        remesh_band=1,
+                        remesh_project=0,
+                        use_tqdm=True,
+                    )
+
+                ts = make_timestamp()
+                obj_dir = session_dir / f"obj_{ts}"
+                obj_dir.mkdir(exist_ok=True)
+
+                # Export OBJ (trimesh writes .obj + .mtl + texture images)
+                obj_path = obj_dir / "model.obj"
+                textured_mesh.export(
+                    str(obj_path),
+                    file_type='obj',
+                    include_texture=True,
+                )
+
+                # Zip everything in the obj directory
+                zip_path = session_dir / f"model_{ts}.zip"
+                with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for f in obj_dir.iterdir():
+                        zf.write(str(f), f.name)
+
+                # Clean up the temp directory
+                shutil.rmtree(str(obj_dir), ignore_errors=True)
+                torch.cuda.empty_cache()
+                return str(zip_path)
+
+            zip_path = await asyncio.get_event_loop().run_in_executor(None, do_export)
+
+            # Restore pipeline and envmaps to cuda:0
+            pipeline.cuda()
+            if tex_pipeline is not None:
+                tex_pipeline.cuda()
+            for k, v in envmap.items():
+                v.image = v.image.cuda()
+
+            return FileResponse(zip_path, media_type="application/zip", filename=Path(zip_path).name)
+
+        except Exception as e:
+            try:
+                pipeline.cuda()
+                if tex_pipeline is not None:
+                    tex_pipeline.cuda()
+                for k, v in envmap.items():
+                    v.image = v.image.cuda()
+            except Exception:
+                pass
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# API: Convert GLB to OBJ (no GPU required)
+# ---------------------------------------------------------------------------
+@app.post("/api/convert-to-obj")
+async def convert_to_obj(glb_file: UploadFile = File(...)):
+    session_id = str(uuid.uuid4())
+    session_dir = get_session_dir(session_id)
+
+    try:
+        glb_data = await glb_file.read()
+        glb_tmp = session_dir / "input.glb"
+        glb_tmp.write_bytes(glb_data)
+
+        def do_convert():
+            mesh = trimesh.load(str(glb_tmp))
+            if isinstance(mesh, trimesh.Scene):
+                mesh = mesh.to_mesh()
+
+            ts = make_timestamp()
+            obj_dir = session_dir / f"obj_{ts}"
+            obj_dir.mkdir(exist_ok=True)
+
+            obj_path = obj_dir / "model.obj"
+            mesh.export(str(obj_path), file_type='obj', include_texture=True)
+
+            zip_path = session_dir / f"model_{ts}.zip"
+            with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
+                for f in obj_dir.iterdir():
+                    zf.write(str(f), f.name)
+
+            shutil.rmtree(str(obj_dir), ignore_errors=True)
+            return str(zip_path)
+
+        zip_path = await asyncio.get_event_loop().run_in_executor(None, do_convert)
+        return FileResponse(zip_path, media_type="application/zip", filename=Path(zip_path).name)
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

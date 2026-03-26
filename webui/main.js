@@ -494,12 +494,11 @@ async function generateTexturing() {
       throw new Error(err.detail || 'Texturing failed');
     }
     updateProgress(100, 'Done!');
-    // Texturing returns GLB directly
+    // Texturing returns GLB directly — show in 3D viewer, download via buttons
     const blob = await res.blob();
     state.glbUrl = URL.createObjectURL(blob);
     state.previews = null;
     state.sessionId = null;
-    triggerDownload(state.glbUrl, 'textured_model.glb');
     showGlbViewer();
   } catch (err) {
     alert(`Error: ${err.message}`);
@@ -657,9 +656,16 @@ function initAngleSlider() {
 // ============================================================
 function initExtractButton() {
   $('#extractBtn').addEventListener('click', extractGlb);
+  $('#extractObjBtn').addEventListener('click', extractObj);
 }
 
 async function extractGlb() {
+  // If we already have a GLB (e.g. from texturing), download it directly
+  if (state.glbUrl && !state.sessionId) {
+    triggerDownload(state.glbUrl, 'model.glb');
+    return;
+  }
+
   if (!state.sessionId) {
     alert('No model to extract. Generate first.');
     return;
@@ -693,7 +699,58 @@ async function extractGlb() {
     btn.disabled = false;
     btn.innerHTML = `
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      Extract &amp; Download GLB
+      Download GLB
+    `;
+  }
+}
+
+async function extractObj() {
+  if (!state.sessionId && !state.glbUrl) {
+    alert('No model to extract. Generate first.');
+    return;
+  }
+
+  const btn = $('#extractObjBtn');
+  btn.disabled = true;
+  btn.textContent = 'Extracting OBJ…';
+
+  try {
+    let blob;
+
+    if (!state.sessionId && state.glbUrl) {
+      // Texturing path: convert the GLB blob to OBJ via server
+      const glbBlob = await fetch(state.glbUrl).then(r => r.blob());
+      const formData = new FormData();
+      formData.append('glb_file', glbBlob, 'model.glb');
+      const res = await fetch('/api/convert-to-obj', { method: 'POST', body: formData });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'OBJ conversion failed');
+      }
+      blob = await res.blob();
+    } else {
+      // Generation path: extract OBJ from latents
+      const formData = new FormData();
+      formData.append('session_id', state.sessionId);
+      formData.append('decimation_target', $('#decimationTarget').value);
+      formData.append('texture_size', $('#textureSize').value);
+      const res = await fetch('/api/extract-obj', { method: 'POST', body: formData });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'OBJ extraction failed');
+      }
+      blob = await res.blob();
+    }
+
+    const url = URL.createObjectURL(blob);
+    triggerDownload(url, 'model.zip');
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Download OBJ
     `;
   }
 }
@@ -724,10 +781,14 @@ async function loadGlbInViewer(url) {
   // Clean up previous scene
   if (threeScene) {
     threeScene.renderer.dispose();
+    if (threeScene.resizeObserver) threeScene.resizeObserver.disconnect();
   }
 
-  const width = container.clientWidth;
-  const height = container.clientHeight;
+  // Wait one frame for layout reflow (container may have just become visible)
+  await new Promise(resolve => requestAnimationFrame(resolve));
+
+  const width = container.clientWidth || 800;
+  const height = container.clientHeight || 600;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0d0d18);
@@ -736,7 +797,7 @@ async function loadGlbInViewer(url) {
   camera.position.set(0, 0.5, 2);
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setSize(width, height);
+  renderer.setSize(width, height, false);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.2;
@@ -760,22 +821,37 @@ async function loadGlbInViewer(url) {
 
   // Load GLB
   const loader = new GLTFLoader();
-  loader.load(url, (gltf) => {
-    const model = gltf.scene;
+  loader.load(
+    url,
+    (gltf) => {
+      const model = gltf.scene;
+      console.log('[3D Viewer] GLB loaded, meshes:', model.children.length);
 
-    // Center and scale
-    const box = new THREE.Box3().setFromObject(model);
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const scale = 1.5 / maxDim;
-    model.scale.setScalar(scale);
-    model.position.sub(center.multiplyScalar(scale));
+      // Center and scale
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      console.log('[3D Viewer] Bounding box size:', size, 'maxDim:', maxDim);
 
-    scene.add(model);
-    controls.target.set(0, 0, 0);
-    controls.update();
-  });
+      if (maxDim === 0 || !isFinite(maxDim)) {
+        console.warn('[3D Viewer] Model has zero or invalid dimensions');
+        return;
+      }
+
+      const scale = 1.5 / maxDim;
+      model.scale.setScalar(scale);
+      model.position.sub(center.multiplyScalar(scale));
+
+      scene.add(model);
+      controls.target.set(0, 0, 0);
+      controls.update();
+    },
+    undefined,
+    (error) => {
+      console.error('[3D Viewer] Failed to load GLB:', error);
+    }
+  );
 
   // Animate
   function animate() {
@@ -785,13 +861,18 @@ async function loadGlbInViewer(url) {
   }
   animate();
 
-  // Handle resize
+  // Handle resize — guard against infinite loops
+  let lastW = width, lastH = height;
   const resizeObserver = new ResizeObserver(() => {
     const w = container.clientWidth;
     const h = container.clientHeight;
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-    renderer.setSize(w, h);
+    if (w > 0 && h > 0 && (w !== lastW || h !== lastH)) {
+      lastW = w;
+      lastH = h;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h, false);
+    }
   });
   resizeObserver.observe(container);
 
@@ -801,7 +882,7 @@ async function loadGlbInViewer(url) {
 function showGlbViewer() {
   $('#emptyState').hidden = true;
   $('#viewerModeBar').hidden = false;
-  $('#actionBar').hidden = true;
+  $('#actionBar').hidden = false;
   setViewerMode('3d');
 }
 
