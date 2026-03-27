@@ -5,6 +5,7 @@ os.environ["ATTN_BACKEND"] = "sdpa"
 os.environ["SPARSE_ATTN_BACKEND"] = "sdpa"
 
 import asyncio
+import gc
 import uuid
 import shutil
 import json
@@ -66,6 +67,35 @@ progress_store: dict = {}  # task_id -> {stage, step, total, done}
 
 # GPU lock — only one generation at a time
 gpu_lock = asyncio.Lock()
+
+
+def offload_all_to_cpu():
+    """Force-move ALL pipeline models to CPU.
+    pipeline.cpu() is a no-op in low_vram mode, so we must
+    explicitly move every sub-model."""
+    import gc
+    for p in [pipeline, tex_pipeline]:
+        if p is None:
+            continue
+        # Move all nn.Module models
+        for name, model in p.models.items():
+            model.cpu()
+        # Move image conditioning model
+        if hasattr(p, 'image_cond_model') and p.image_cond_model is not None:
+            p.image_cond_model.cpu()
+        # Move rembg model
+        if hasattr(p, 'rembg_model') and p.rembg_model is not None:
+            try:
+                p.rembg_model.cpu()
+            except Exception:
+                pass
+    # Move envmaps off GPU
+    for k, v in envmap.items():
+        v.image = v.image.cpu()
+        if hasattr(v, '_nvdiffrec_envlight'):
+            del v._nvdiffrec_envlight
+    gc.collect()
+    torch.cuda.empty_cache()
 
 # ---------------------------------------------------------------------------
 # App
@@ -257,6 +287,7 @@ async def generate(
 
             def do_generation():
                 import torch as _torch
+                import gc
                 _torch.manual_seed(seed)
 
                 with _torch.no_grad():
@@ -307,12 +338,20 @@ async def generate(
                     tex_model = pipeline.models['tex_slat_flow_model_512'] if pipeline_type == '512' else pipeline.models['tex_slat_flow_model_1024']
                     tex_slat = pipeline.sample_tex_slat(tex_cond, tex_model, shape_slat, tex_params)
 
+                    # Free conditioning tensors before decode — they're large and no longer needed
+                    del cond_512, cond_1024, tex_cond, coords
+                    gc.collect()
                     _torch.cuda.empty_cache()
 
                     progress_store[task_id] = {"stage": "Decoding mesh", "step": 75, "total": 100, "done": False}
 
                     # Stage 5: Decode latents to mesh
                     out_mesh = pipeline.decode_latent(shape_slat, tex_slat, res)
+
+                    # Free decode intermediates
+                    gc.collect()
+                    _torch.cuda.empty_cache()
+
                     return out_mesh, (shape_slat, tex_slat, res)
 
             outputs, latents = await asyncio.get_event_loop().run_in_executor(None, do_generation)
@@ -324,9 +363,14 @@ async def generate(
                 None, lambda: render_preview_images(mesh, envmap)
             )
 
-            # Store latents for later GLB extraction
+            # Store latents for later GLB extraction (moves to CPU)
             state = pack_state(latents)
             latent_store[session_id] = state
+
+            # Free GPU latents now that they're on CPU
+            del outputs, latents
+            import gc; gc.collect()
+            torch.cuda.empty_cache()
 
             progress_store[task_id] = {"stage": "Done", "step": 100, "total": 100, "done": True}
 
@@ -340,6 +384,9 @@ async def generate(
         except Exception as e:
             progress_store[task_id] = {"stage": f"Error: {str(e)}", "step": 0, "total": 100, "done": True}
             traceback.print_exc()
+            # Ensure VRAM is freed on error
+            import gc; gc.collect()
+            torch.cuda.empty_cache()
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -433,6 +480,11 @@ async def generate_multiview(
             state = pack_state(latents)
             latent_store[session_id] = state
 
+            # Free GPU latents now that they're on CPU
+            del outputs, latents
+            import gc; gc.collect()
+            torch.cuda.empty_cache()
+
             progress_store[task_id] = {"stage": "Done", "step": 100, "total": 100, "done": True}
 
             return JSONResponse({
@@ -446,6 +498,8 @@ async def generate_multiview(
         except Exception as e:
             progress_store[task_id] = {"stage": f"Error: {str(e)}", "step": 0, "total": 100, "done": True}
             traceback.print_exc()
+            import gc; gc.collect()
+            torch.cuda.empty_cache()
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -466,22 +520,16 @@ async def extract_glb(
 
     async with gpu_lock:
         try:
+            # Force all models off GPU — pipeline.cpu() is a no-op in low_vram mode
+            offload_all_to_cpu()
+
             shape_slat, tex_slat, res = unpack_state(state)
             mesh = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: pipeline.decode_latent(shape_slat, tex_slat, res)[0]
             )
 
-            # Free cuda:0 to release VRAM (important at 1536 resolution)
-            pipeline.cpu()
-            if tex_pipeline is not None:
-                tex_pipeline.cpu()
-            # Move envmaps off GPU temporarily
-            for k, v in envmap.items():
-                v.image = v.image.cpu()
-                if hasattr(v, '_nvdiffrec_envlight'):
-                    del v._nvdiffrec_envlight
             del shape_slat, tex_slat
-            import gc; gc.collect()
+            gc.collect()
             torch.cuda.empty_cache()
 
             def do_export():
@@ -517,24 +565,21 @@ async def extract_glb(
 
             glb_path = await asyncio.get_event_loop().run_in_executor(None, do_export)
 
-            # Restore pipeline and envmaps to cuda:0
-            pipeline.cuda()
-            if tex_pipeline is not None:
-                tex_pipeline.cuda()
+            # Restore envmaps to GPU (models load on-demand in low_vram mode)
             for k, v in envmap.items():
                 v.image = v.image.cuda()
 
             return FileResponse(glb_path, media_type="model/gltf-binary", filename=Path(glb_path).name)
 
         except Exception as e:
+            # Restore envmaps on error too
             try:
-                pipeline.cuda()
-                if tex_pipeline is not None:
-                    tex_pipeline.cuda()
                 for k, v in envmap.items():
                     v.image = v.image.cuda()
             except Exception:
                 pass
+            import gc; gc.collect()
+            torch.cuda.empty_cache()
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -556,21 +601,16 @@ async def extract_obj(
 
     async with gpu_lock:
         try:
+            # Force all models off GPU — pipeline.cpu() is a no-op in low_vram mode
+            offload_all_to_cpu()
+
             shape_slat, tex_slat, res = unpack_state(state)
             mesh = await asyncio.get_event_loop().run_in_executor(
                 None, lambda: pipeline.decode_latent(shape_slat, tex_slat, res)[0]
             )
 
-            # Free cuda:0 to release VRAM
-            pipeline.cpu()
-            if tex_pipeline is not None:
-                tex_pipeline.cpu()
-            for k, v in envmap.items():
-                v.image = v.image.cpu()
-                if hasattr(v, '_nvdiffrec_envlight'):
-                    del v._nvdiffrec_envlight
             del shape_slat, tex_slat
-            import gc; gc.collect()
+            gc.collect()
             torch.cuda.empty_cache()
 
             def do_export():
@@ -623,10 +663,7 @@ async def extract_obj(
 
             zip_path = await asyncio.get_event_loop().run_in_executor(None, do_export)
 
-            # Restore pipeline and envmaps to cuda:0
-            pipeline.cuda()
-            if tex_pipeline is not None:
-                tex_pipeline.cuda()
+            # Restore envmaps to GPU (models load on-demand in low_vram mode)
             for k, v in envmap.items():
                 v.image = v.image.cuda()
 
@@ -634,13 +671,12 @@ async def extract_obj(
 
         except Exception as e:
             try:
-                pipeline.cuda()
-                if tex_pipeline is not None:
-                    tex_pipeline.cuda()
                 for k, v in envmap.items():
                     v.image = v.image.cuda()
             except Exception:
                 pass
+            import gc; gc.collect()
+            torch.cuda.empty_cache()
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
