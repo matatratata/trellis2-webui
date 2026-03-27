@@ -234,36 +234,88 @@ async def generate(
 
     async with gpu_lock:
         try:
-            progress_store[task_id] = {"stage": "Generating 3D", "step": 10, "total": 100, "done": False}
+            progress_store[task_id] = {"stage": "Conditioning image", "step": 10, "total": 100, "done": False}
 
-            outputs, latents = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: pipeline.run(
-                    pil_image,
-                    seed=seed,
-                    preprocess_image=False,
-                    sparse_structure_sampler_params={
-                        "steps": ss_sampling_steps,
-                        "guidance_strength": ss_guidance_strength,
-                        "guidance_rescale": ss_guidance_rescale,
-                        "rescale_t": ss_rescale_t,
-                    },
-                    shape_slat_sampler_params={
-                        "steps": shape_sampling_steps,
-                        "guidance_strength": shape_guidance_strength,
-                        "guidance_rescale": shape_guidance_rescale,
-                        "rescale_t": shape_rescale_t,
-                    },
-                    tex_slat_sampler_params={
-                        "steps": tex_sampling_steps,
-                        "guidance_strength": tex_guidance_strength,
-                        "guidance_rescale": tex_guidance_rescale,
-                        "rescale_t": tex_rescale_t,
-                    },
-                    pipeline_type=pipeline_type,
-                    return_latent=True,
-                )
-            )
+            ss_params = {
+                "steps": ss_sampling_steps,
+                "guidance_strength": ss_guidance_strength,
+                "guidance_rescale": ss_guidance_rescale,
+                "rescale_t": ss_rescale_t,
+            }
+            shape_params = {
+                "steps": shape_sampling_steps,
+                "guidance_strength": shape_guidance_strength,
+                "guidance_rescale": shape_guidance_rescale,
+                "rescale_t": shape_rescale_t,
+            }
+            tex_params = {
+                "steps": tex_sampling_steps,
+                "guidance_strength": tex_guidance_strength,
+                "guidance_rescale": tex_guidance_rescale,
+                "rescale_t": tex_rescale_t,
+            }
+
+            def do_generation():
+                import torch as _torch
+                _torch.manual_seed(seed)
+
+                with _torch.no_grad():
+                    # Stage 1: Image conditioning
+                    cond_512 = pipeline.get_cond([pil_image], 512)
+                    cond_1024 = pipeline.get_cond([pil_image], 1024) if pipeline_type != '512' else None
+
+                    progress_store[task_id] = {"stage": "Sparse structure", "step": 20, "total": 100, "done": False}
+
+                    # Stage 2: Sparse structure sampling
+                    ss_res = {'512': 32, '1024': 64, '1024_cascade': 32, '1536_cascade': 32}[pipeline_type]
+                    coords = pipeline.sample_sparse_structure(cond_512, ss_res, 1, ss_params)
+
+                    progress_store[task_id] = {"stage": "Generating shape", "step": 30, "total": 100, "done": False}
+
+                    # Stage 3: Shape SLat sampling
+                    if pipeline_type == '512':
+                        shape_slat = pipeline.sample_shape_slat(
+                            cond_512, pipeline.models['shape_slat_flow_model_512'],
+                            coords, shape_params
+                        )
+                        res = 512
+                    elif pipeline_type == '1024':
+                        shape_slat = pipeline.sample_shape_slat(
+                            cond_1024, pipeline.models['shape_slat_flow_model_1024'],
+                            coords, shape_params
+                        )
+                        res = 1024
+                    elif pipeline_type == '1024_cascade':
+                        shape_slat, res = pipeline.sample_shape_slat_cascade(
+                            cond_512, cond_1024,
+                            pipeline.models['shape_slat_flow_model_512'], pipeline.models['shape_slat_flow_model_1024'],
+                            512, 1024,
+                            coords, shape_params,
+                        )
+                    elif pipeline_type == '1536_cascade':
+                        shape_slat, res = pipeline.sample_shape_slat_cascade(
+                            cond_512, cond_1024,
+                            pipeline.models['shape_slat_flow_model_512'], pipeline.models['shape_slat_flow_model_1024'],
+                            512, 1536,
+                            coords, shape_params,
+                        )
+
+                    progress_store[task_id] = {"stage": "Generating texture", "step": 55, "total": 100, "done": False}
+
+                    # Stage 4: Texture SLat sampling
+                    tex_cond = cond_512 if pipeline_type == '512' else cond_1024
+                    tex_model = pipeline.models['tex_slat_flow_model_512'] if pipeline_type == '512' else pipeline.models['tex_slat_flow_model_1024']
+                    tex_slat = pipeline.sample_tex_slat(tex_cond, tex_model, shape_slat, tex_params)
+
+                    _torch.cuda.empty_cache()
+
+                    progress_store[task_id] = {"stage": "Decoding mesh", "step": 75, "total": 100, "done": False}
+
+                    # Stage 5: Decode latents to mesh
+                    out_mesh = pipeline.decode_latent(shape_slat, tex_slat, res)
+                    return out_mesh, (shape_slat, tex_slat, res)
+
+            outputs, latents = await asyncio.get_event_loop().run_in_executor(None, do_generation)
 
             progress_store[task_id] = {"stage": "Rendering preview", "step": 80, "total": 100, "done": False}
 

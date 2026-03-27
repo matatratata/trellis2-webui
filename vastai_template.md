@@ -24,7 +24,7 @@
    | Variable | Default | Description |
    |---|---|---|
    | `TRELLIS_REPO_URL` | `https://github.com/microsoft/TRELLIS.2.git` | Upstream TRELLIS.2 repo |
-   | `WEBUI_REPO_URL` | *(must set)* | Your trellis2-webui repo URL |
+   | `WEBUI_REPO_URL` | `https://github.com/matatratata/trellis2-webui.git` | Your trellis2-webui repo URL |
    | `WEBUI_REPO_BRANCH` | `main` | Branch to use |
    | `TRELLIS_PORT` | `8000` | Server port |
    | `HF_TOKEN` | *(empty)* | HuggingFace token (gated models) |
