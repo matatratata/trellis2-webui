@@ -356,6 +356,7 @@ fi
 # Apply TRELLIS.2 patches from webui repo
 echo "  Applying patches..."
 python3 "$WEBUI_DIR/patches/sparse_attn_sdpa.py" "$TRELLIS_DIR"
+python3 "$WEBUI_DIR/patches/dinov3_layer_compat.py" "$TRELLIS_DIR"
 
 # Link example images from upstream TRELLIS.2
 if [ ! -e "$WEBUI_DIR/assets/example_image" ] && [ -d "$TRELLIS_DIR/assets/example_image" ]; then
