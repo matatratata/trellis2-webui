@@ -33,6 +33,7 @@ LOG_FILE="/workspace/setup.log"
 PORT="${TRELLIS_PORT:-8000}"
 
 HF_TOKEN="${HF_TOKEN:-}"
+SKIP_MODEL_DOWNLOAD="${SKIP_MODEL_DOWNLOAD:-0}"  # Set to 1 to skip HF model downloads
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -376,30 +377,44 @@ uv pip install -e .
 # ---------------------------------------------------------------------------
 echo "[7/9] Checking models..."
 
-# 7a. TRELLIS.2-4B main model
-if [ -d "${MODEL_DIR}" ] && [ -f "${MODEL_DIR}/config.json" ]; then
-    echo "  TRELLIS.2-4B already downloaded."
-else
-    echo "  Downloading TRELLIS.2-4B from HuggingFace (~16 GB)..."
-    python -c "from huggingface_hub import snapshot_download; snapshot_download('microsoft/TRELLIS.2-4B', local_dir='${MODEL_DIR}'${HF_TOKEN:+, token='${HF_TOKEN}'})"
-    echo "  ✅ TRELLIS.2-4B downloaded."
-fi
-
-# 7b. DINOv3 vision encoder (needed by both main + texturing pipelines)
 DINOV3_DIR="/workspace/models/dinov3-vitl16-pretrain-lvd1689m"
-if [ -d "${DINOV3_DIR}" ] && [ -f "${DINOV3_DIR}/model.safetensors" ]; then
-    echo "  DINOv3 already downloaded."
+
+if [ "$SKIP_MODEL_DOWNLOAD" = "1" ]; then
+    echo "  ⏭️  SKIP_MODEL_DOWNLOAD=1 — skipping HuggingFace downloads."
+    echo "  Provide models manually to these paths:"
+    echo "    TRELLIS.2-4B : ${MODEL_DIR}/"
+    echo "    DINOv3       : ${DINOV3_DIR}/"
+    echo ""
+    echo "  Example (from another machine):"
+    echo "    rsync -avP TRELLIS.2-4B/ root@<host>:${MODEL_DIR}/"
+    echo "    rsync -avP dinov3-vitl16-pretrain-lvd1689m/ root@<host>:${DINOV3_DIR}/"
 else
-    echo "  Downloading DINOv3 ViT-L/16 (~1.2 GB)..."
-    python -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/dinov3-vitl16-pretrain-lvd1689m', local_dir='${DINOV3_DIR}'${HF_TOKEN:+, token='${HF_TOKEN}'})"
-    echo "  ✅ DINOv3 downloaded."
+    # 7a. TRELLIS.2-4B main model
+    if [ -d "${MODEL_DIR}" ] && [ -f "${MODEL_DIR}/config.json" ]; then
+        echo "  TRELLIS.2-4B already downloaded."
+    else
+        echo "  Downloading TRELLIS.2-4B from HuggingFace (~16 GB)..."
+        python -c "from huggingface_hub import snapshot_download; snapshot_download('microsoft/TRELLIS.2-4B', local_dir='${MODEL_DIR}'${HF_TOKEN:+, token='${HF_TOKEN}'})"
+        echo "  ✅ TRELLIS.2-4B downloaded."
+    fi
+
+    # 7b. DINOv3 vision encoder (needed by both main + texturing pipelines)
+    if [ -d "${DINOV3_DIR}" ] && [ -f "${DINOV3_DIR}/model.safetensors" ]; then
+        echo "  DINOv3 already downloaded."
+    else
+        echo "  Downloading DINOv3 ViT-L/16 (~1.2 GB)..."
+        python -c "from huggingface_hub import snapshot_download; snapshot_download('facebook/dinov3-vitl16-pretrain-lvd1689m', local_dir='${DINOV3_DIR}'${HF_TOKEN:+, token='${HF_TOKEN}'})"
+        echo "  ✅ DINOv3 downloaded."
+    fi
 fi
 
 # 7c. Patch pipeline configs to use the Vast.ai model path for DINOv3
-echo "  Patching pipeline configs for DINOv3 path..."
-for cfg in "${MODEL_DIR}/pipeline.json" "${MODEL_DIR}/texturing_pipeline.json"; do
-    if [ -f "$cfg" ]; then
-        python3 -c "
+# (runs regardless — patches configs if models were provided manually)
+if [ -f "${MODEL_DIR}/config.json" ]; then
+    echo "  Patching pipeline configs for DINOv3 path..."
+    for cfg in "${MODEL_DIR}/pipeline.json" "${MODEL_DIR}/texturing_pipeline.json"; do
+        if [ -f "$cfg" ]; then
+            python3 -c "
 import json
 with open('$cfg') as f:
     data = json.load(f)
@@ -410,8 +425,11 @@ if model_name != '${DINOV3_DIR}' and 'dinov3' in model_name.lower():
         json.dump(data, f, indent=4)
     print(f'  Patched {\"$cfg\".split(\"/\")[-1]}')
 "
-    fi
-done
+        fi
+    done
+else
+    echo "  ⚠️  Models not found yet — config patching will happen on next run."
+fi
 
 # ---------------------------------------------------------------------------
 # 8. Build frontend

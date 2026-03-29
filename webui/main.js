@@ -477,8 +477,8 @@ async function generateTexturing() {
   const formData = new FormData();
   formData.append('mesh_file', state.meshFile);
   formData.append('image', state.texImage);
-  formData.append('seed', String(settings.seed));
-  formData.append('randomize_seed', String(settings.randomize_seed));
+  formData.append('seed', String(settings.seed || 11456));
+  formData.append('randomize_seed', 'false');  // Stage 2: fixed seed by default
   formData.append('resolution', settings.resolution);
   formData.append('texture_size', $('#textureSize').value);
   formData.append('tex_guidance_strength', String(settings.tex_guidance_strength));

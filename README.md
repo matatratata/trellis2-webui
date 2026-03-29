@@ -94,6 +94,33 @@ Open http://localhost:5173
 | `TRELLIS_MODEL_PATH` | `/workspace/models/TRELLIS.2-4B` | Model directory |
 | `TRELLIS_PORT` | `8000` | Server port |
 | `ATTN_BACKEND` | `sdpa` | Attention backend (`sdpa` or `flash_attn`) |
+| `SKIP_MODEL_DOWNLOAD` | `0` | Set to `1` to skip HuggingFace model downloads during setup |
+| `HF_TOKEN` | _(empty)_ | HuggingFace token for gated/private model access |
+
+## Manual Model Provisioning
+
+Some servers have unreliable HuggingFace connectivity. Set `SKIP_MODEL_DOWNLOAD=1` in your Vast.ai template env vars to skip automatic downloads and provide models manually.
+
+The setup script expects models at these paths:
+
+| Model | Path | Size |
+|---|---|---|
+| TRELLIS.2-4B | `/workspace/models/TRELLIS.2-4B/` | ~16 GB |
+| DINOv3 ViT-L/16 | `/workspace/models/dinov3-vitl16-pretrain-lvd1689m/` | ~1.2 GB |
+
+**Transfer models via rsync:**
+
+```bash
+# From a machine that has the models downloaded
+rsync -avP TRELLIS.2-4B/ root@<vast-host>:/workspace/models/TRELLIS.2-4B/
+rsync -avP dinov3-vitl16-pretrain-lvd1689m/ root@<vast-host>:/workspace/models/dinov3-vitl16-pretrain-lvd1689m/
+```
+
+Once models are in place, the DINOv3 pipeline config is patched automatically on the next run of `vastai_setup.sh`. You can also restart the WebUI service directly:
+
+```bash
+supervisorctl restart trellis-webui
+```
 
 ## License
 

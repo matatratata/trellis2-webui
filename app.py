@@ -42,7 +42,7 @@ APP_DIR = Path(__file__).parent
 TMP_DIR = APP_DIR / "tmp_webui"
 WEBUI_DIR = APP_DIR / "webui" / "dist"
 ASSETS_DIR = APP_DIR / "assets"
-MAX_SEED = np.iinfo(np.int32).max
+MAX_SEED = 100000  # Cap random seeds at 100k for all stages
 
 # Model path: env var > default location for vast.ai
 MODEL_PATH = os.environ.get(
@@ -397,7 +397,7 @@ async def generate(
 async def generate_multiview(
     request: Request,
     seed: int = Form(0),
-    randomize_seed: bool = Form(True),
+    randomize_seed: bool = Form(True),  # Stage 1: random seed ≤ 100k
     resolution: str = Form("1024"),
     ss_guidance_strength: float = Form(7.5),
     ss_guidance_rescale: float = Form(0.7),
@@ -729,8 +729,8 @@ async def convert_to_obj(glb_file: UploadFile = File(...)):
 async def texturing(
     mesh_file: UploadFile = File(...),
     image: UploadFile = File(...),
-    seed: int = Form(0),
-    randomize_seed: bool = Form(True),
+    seed: int = Form(11456),
+    randomize_seed: bool = Form(False),  # Stage 2: fixed seed 11456 by default
     resolution: str = Form("1024"),
     texture_size: int = Form(2048),
     tex_guidance_strength: float = Form(1.0),
