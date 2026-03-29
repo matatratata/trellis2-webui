@@ -529,7 +529,7 @@ async def extract_glb(
             )
 
             del shape_slat, tex_slat
-            gc.collect()
+            import gc; gc.collect()
             torch.cuda.empty_cache()
 
             def do_export():
@@ -610,7 +610,7 @@ async def extract_obj(
             )
 
             del shape_slat, tex_slat
-            gc.collect()
+            import gc; gc.collect()
             torch.cuda.empty_cache()
 
             def do_export():
