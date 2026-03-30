@@ -264,6 +264,9 @@ async def generate(
 
     async with gpu_lock:
         try:
+            # Ensure GPU is clean before starting a new generation
+            offload_all_to_cpu()
+
             progress_store[task_id] = {"stage": "Conditioning image", "step": 10, "total": 100, "done": False}
 
             ss_params = {
@@ -367,10 +370,9 @@ async def generate(
             state = pack_state(latents)
             latent_store[session_id] = state
 
-            # Free GPU latents now that they're on CPU
+            # Free GPU latents and models now that latents are on CPU
             del outputs, latents
-            import gc; gc.collect()
-            torch.cuda.empty_cache()
+            offload_all_to_cpu()
 
             progress_store[task_id] = {"stage": "Done", "step": 100, "total": 100, "done": True}
 
@@ -439,6 +441,9 @@ async def generate_multiview(
 
     async with gpu_lock:
         try:
+            # Ensure GPU is clean before starting a new generation
+            offload_all_to_cpu()
+
             progress_store[task_id] = {"stage": "Generating 3D (multi-view)", "step": 10, "total": 100, "done": False}
 
             outputs, latents = await asyncio.get_event_loop().run_in_executor(
@@ -480,10 +485,9 @@ async def generate_multiview(
             state = pack_state(latents)
             latent_store[session_id] = state
 
-            # Free GPU latents now that they're on CPU
+            # Free GPU latents and models now that latents are on CPU
             del outputs, latents
-            import gc; gc.collect()
-            torch.cuda.empty_cache()
+            offload_all_to_cpu()
 
             progress_store[task_id] = {"stage": "Done", "step": 100, "total": 100, "done": True}
 
@@ -531,6 +535,10 @@ async def extract_glb(
             del shape_slat, tex_slat
             import gc; gc.collect()
             torch.cuda.empty_cache()
+
+            # decode_latent auto-loaded models back to GPU — evict them
+            # before the memory-hungry mesh simplification
+            offload_all_to_cpu()
 
             def do_export():
                 # Move mesh data to the mesh-processing GPU
@@ -612,6 +620,10 @@ async def extract_obj(
             del shape_slat, tex_slat
             import gc; gc.collect()
             torch.cuda.empty_cache()
+
+            # decode_latent auto-loaded models back to GPU — evict them
+            # before the memory-hungry mesh simplification
+            offload_all_to_cpu()
 
             def do_export():
                 dev = MESH_DEVICE
