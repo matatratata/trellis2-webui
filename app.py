@@ -685,10 +685,61 @@ async def extract_obj(
                         Image.fromarray(mr_arr[:, :, 2]).save(str(obj_dir / f"{model_name}_metallic.png"))
                         Image.fromarray(mr_arr[:, :, 1]).save(str(obj_dir / f"{model_name}_roughness.png"))
 
-                    # Normal map from normalTexture (baked in postprocess.py)
+                    # Normal map — baked by patched o_voxel via nvdiffrast (GPU)
                     nm_tex = getattr(mat, 'normalTexture', None)
                     if nm_tex is not None:
                         Image.fromarray(np.array(nm_tex)[:, :, :3]).save(str(obj_dir / f"{model_name}_normal.png"))
+                        print(f"[OBJ] Normal map extracted from PBR material (GPU-baked)")
+                    else:
+                        # Fallback: bake normal map from mesh vertex normals on CPU
+                        # (used if o_voxel was installed without the normal_map_bake patch)
+                        try:
+                            mesh_vn = textured_mesh.vertex_normals
+                            mesh_uv = textured_mesh.visual.uv
+                            mesh_faces = textured_mesh.faces
+                            tex_h = bc_arr.shape[0] if bc_tex is not None else texture_size
+                            tex_w = bc_arr.shape[1] if bc_tex is not None else texture_size
+
+                            nmap = np.full((tex_h, tex_w, 3), [128, 128, 255], dtype=np.uint8)
+                            wmap = np.zeros((tex_h, tex_w), dtype=np.float64)
+                            nmap_f = np.zeros((tex_h, tex_w, 3), dtype=np.float64)
+
+                            for fi in range(mesh_faces.shape[0]):
+                                vi = mesh_faces[fi]
+                                uv_tri = mesh_uv[vi]
+                                fn = mesh_vn[vi].mean(axis=0)
+                                fn = fn / (np.linalg.norm(fn) + 1e-8)
+
+                                px = (uv_tri[:, 0] * (tex_w - 1)).astype(np.int32)
+                                py = ((1 - uv_tri[:, 1]) * (tex_h - 1)).astype(np.int32)
+                                pts = np.stack([px, py], axis=-1)
+
+                                x0, y0 = pts.min(axis=0).clip(0)
+                                x1, y1 = np.minimum(pts.max(axis=0), [tex_w-1, tex_h-1])
+                                if x0 >= x1 or y0 >= y1:
+                                    continue
+
+                                m = np.zeros((y1-y0+1, x1-x0+1), dtype=np.uint8)
+                                cv2.fillConvexPoly(m, pts - [[x0, y0]], 1)
+                                sel = m > 0
+                                nmap_f[y0:y1+1, x0:x1+1][sel] += fn
+                                wmap[y0:y1+1, x0:x1+1][sel] += 1.0
+
+                            valid = wmap > 0
+                            for c in range(3):
+                                nmap_f[:,:,c][valid] /= wmap[valid]
+                            nrm_len = np.maximum(np.linalg.norm(nmap_f, axis=-1, keepdims=True), 1e-8)
+                            nmap_f = nmap_f / nrm_len
+                            nmap_f[~valid] = [0, 0, 1]
+                            nmap = np.clip((nmap_f * 0.5 + 0.5) * 255, 0, 255).astype(np.uint8)
+                            mask_inv_nm = (~valid).astype(np.uint8)
+                            nmap = cv2.inpaint(nmap, mask_inv_nm, 3, cv2.INPAINT_TELEA)
+
+                            Image.fromarray(nmap).save(str(obj_dir / f"{model_name}_normal.png"))
+                            print(f"[OBJ] Normal map baked from vertex normals (CPU fallback, {tex_w}x{tex_h})")
+                        except Exception as nm_err:
+                            print(f"⚠ Could not bake normal map: {nm_err}")
+                            import traceback as _tb; _tb.print_exc()
 
                     print(f"[OBJ] PBR maps saved for '{model_name}': basecolor, metallic, roughness, normal, alpha")
                 except Exception as pbr_err:

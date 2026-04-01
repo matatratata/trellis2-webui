@@ -313,6 +313,125 @@ PYEOF
     # Remove git deps for cumesh/flex_gemm from o-voxel's pyproject.toml
     # (we already built and installed them from patched local clones)
     sed -i '/cumesh @/d; /flex_gemm @/d' "$EXTDIR/o-voxel/pyproject.toml"
+
+    # Patch o-voxel postprocess.py to bake normal maps via nvdiffrast GPU rasterizer.
+    # Must be inlined here because $WEBUI_DIR hasn't been cloned yet (Phase 1).
+    echo "      Patching postprocess.py for normal map baking..."
+    NMAP_PATCH="$EXTDIR/normal_map_bake_patch.py"
+    cat > "$NMAP_PATCH" << 'PYEOF'
+"""Patch o_voxel postprocess.py: bake vertex normals into a normal map texture.
+
+Adds GPU-accelerated normal map baking using the existing nvdiffrast UV
+rasterization pipeline, with coordinate-system conversion and seam inpainting.
+The normalTexture is then set on the PBR material for OBJ/GLB export.
+"""
+import sys, os
+
+def patch(ovoxel_dir):
+    target = os.path.join(ovoxel_dir, 'o_voxel', 'postprocess.py')
+    if not os.path.exists(target):
+        print(f"  [SKIP] {target} not found")
+        return
+
+    src = open(target).read()
+    changed = False
+
+    # Patch 1: Bake normals into texture after attribute sampling
+    old_1 = (
+        "    )\n"
+        "    if use_tqdm:\n"
+        "        pbar.update(1)\n"
+        "    if verbose:\n"
+        '        print("Done")\n'
+        "    \n"
+        "    # --- Texture Post-Processing & Material Construction ---"
+    )
+    new_1 = (
+        "    )\n"
+        "    \n"
+        "    # --- Bake vertex normals into a normal-map texture ---\n"
+        "    normal_map_tex = dr.interpolate(out_normals.unsqueeze(0), rast, out_faces)[0][0]\n"
+        "    normal_map_tex = normal_map_tex.clone()\n"
+        "    normal_map_tex_y = normal_map_tex[..., 1].clone()\n"
+        "    normal_map_tex_z = normal_map_tex[..., 2].clone()\n"
+        "    normal_map_tex[..., 1] = normal_map_tex_z\n"
+        "    normal_map_tex[..., 2] = -normal_map_tex_y\n"
+        "    nrm_len = normal_map_tex.norm(dim=-1, keepdim=True).clamp(min=1e-8)\n"
+        "    normal_map_tex = normal_map_tex / nrm_len\n"
+        "    normal_map_np = np.clip((normal_map_tex.cpu().numpy() * 0.5 + 0.5) * 255, 0, 255).astype(np.uint8)\n"
+        "\n"
+        "    if use_tqdm:\n"
+        "        pbar.update(1)\n"
+        "    if verbose:\n"
+        '        print("Done")\n'
+        "    \n"
+        "    # --- Texture Post-Processing & Material Construction ---"
+    )
+
+    if "# --- Bake vertex normals into a normal-map" in src:
+        print("      [SKIP] Normal map bake already applied")
+    elif old_1 in src:
+        src = src.replace(old_1, new_1)
+        changed = True
+        print("      Applied normal map baking via nvdiffrast")
+    else:
+        print("      [WARN] Could not find attribute sampling pattern")
+
+    # Patch 2: Inpaint the normal map alongside other textures
+    old_2 = (
+        "    alpha = cv2.inpaint(alpha, mask_inv, 1, cv2.INPAINT_TELEA)[..., None]\n"
+        "    \n"
+        "    # Create PBR material"
+    )
+    new_2 = (
+        "    alpha = cv2.inpaint(alpha, mask_inv, 1, cv2.INPAINT_TELEA)[..., None]\n"
+        "    normal_map_np[~mask] = [128, 128, 255]\n"
+        "    normal_map_np = cv2.inpaint(normal_map_np, mask_inv, 3, cv2.INPAINT_TELEA)\n"
+        "    \n"
+        "    # Create PBR material (with normal map)"
+    )
+
+    if "normal_map_np = cv2.inpaint" in src:
+        print("      [SKIP] Normal map inpaint already applied")
+    elif old_2 in src:
+        src = src.replace(old_2, new_2)
+        changed = True
+        print("      Applied normal map inpainting")
+    else:
+        print("      [WARN] Could not find inpainting pattern")
+
+    # Patch 3: Add normalTexture to PBR material constructor
+    old_3 = (
+        "        metallicFactor=1.0,\n"
+        "        roughnessFactor=1.0,\n"
+        "        alphaMode=alpha_mode,"
+    )
+    new_3 = (
+        "        metallicFactor=1.0,\n"
+        "        roughnessFactor=1.0,\n"
+        "        normalTexture=Image.fromarray(normal_map_np),\n"
+        "        alphaMode=alpha_mode,"
+    )
+
+    if "normalTexture=Image.fromarray(normal_map_np)" in src:
+        print("      [SKIP] normalTexture already in PBR material")
+    elif old_3 in src:
+        src = src.replace(old_3, new_3)
+        changed = True
+        print("      Applied normalTexture to PBR material")
+    else:
+        print("      [WARN] Could not find PBR material pattern")
+
+    if changed:
+        open(target, 'w').write(src)
+        print("      ✅ Normal map patches applied to postprocess.py")
+    else:
+        print("      No changes needed")
+
+patch(sys.argv[1])
+PYEOF
+    python3 "$NMAP_PATCH" "$EXTDIR/o-voxel"
+
     uv pip install "$EXTDIR/o-voxel" --no-build-isolation
 
     # -- NVIDIA runtime packages --
