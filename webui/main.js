@@ -659,10 +659,19 @@ function initExtractButton() {
   $('#extractObjBtn').addEventListener('click', extractObj);
 }
 
+function getModelName() {
+  // Read from input, sanitize for filesystem use
+  let raw = ($('#modelNameInput')?.value || '').trim();
+  if (!raw) return '';
+  // Replace spaces/special chars with underscores, lowercase, truncate
+  return raw.replace(/[^a-zA-Z0-9_\-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').substring(0, 64).toLowerCase();
+}
+
 async function extractGlb() {
   // If we already have a GLB (e.g. from texturing), download it directly
   if (state.glbUrl && !state.sessionId) {
-    triggerDownload(state.glbUrl, 'model.glb');
+    const name = getModelName() || 'model';
+    triggerDownload(state.glbUrl, `${name}.glb`);
     return;
   }
 
@@ -688,7 +697,8 @@ async function extractGlb() {
     }
     const blob = await res.blob();
     state.glbUrl = URL.createObjectURL(blob);
-    triggerDownload(state.glbUrl, 'model.glb');
+    const name = getModelName() || 'model';
+    triggerDownload(state.glbUrl, `${name}.glb`);
 
     // Show 3D view option
     setViewerMode('3d');
@@ -710,6 +720,23 @@ async function extractObj() {
     return;
   }
 
+  // Require a model name for OBJ export
+  let modelName = getModelName();
+  if (!modelName) {
+    // Auto-open export settings and focus the input
+    const details = $('#exportSettings');
+    if (details && !details.open) details.open = true;
+    const input = $('#modelNameInput');
+    if (input) {
+      input.focus();
+      input.style.outline = '2px solid var(--accent)';
+      input.style.outlineOffset = '2px';
+      setTimeout(() => { input.style.outline = ''; input.style.outlineOffset = ''; }, 2000);
+    }
+    alert('Please enter a Model Name in Export Settings before downloading OBJ.\n\nThis name will be used for all filenames and material references.');
+    return;
+  }
+
   const btn = $('#extractObjBtn');
   btn.disabled = true;
   btn.textContent = 'Extracting OBJ…';
@@ -722,6 +749,7 @@ async function extractObj() {
       const glbBlob = await fetch(state.glbUrl).then(r => r.blob());
       const formData = new FormData();
       formData.append('glb_file', glbBlob, 'model.glb');
+      formData.append('model_name', modelName);
       const res = await fetch('/api/convert-to-obj', { method: 'POST', body: formData });
       if (!res.ok) {
         const err = await res.json();
@@ -732,6 +760,7 @@ async function extractObj() {
       // Generation path: extract OBJ from latents
       const formData = new FormData();
       formData.append('session_id', state.sessionId);
+      formData.append('model_name', modelName);
       formData.append('decimation_target', $('#decimationTarget').value);
       formData.append('texture_size', $('#textureSize').value);
       const res = await fetch('/api/extract-obj', { method: 'POST', body: formData });
@@ -743,7 +772,7 @@ async function extractObj() {
     }
 
     const url = URL.createObjectURL(blob);
-    triggerDownload(url, 'model.zip');
+    triggerDownload(url, `${modelName}.zip`);
   } catch (err) {
     alert(`Error: ${err.message}`);
   } finally {

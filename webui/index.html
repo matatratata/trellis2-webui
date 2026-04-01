@@ -248,6 +248,11 @@
           <details class="advanced-details" id="exportSettings">
             <summary>Export Settings</summary>
             <div class="advanced-inner">
+              <div class="setting-row" style="margin-bottom: 12px;">
+                <label for="modelNameInput">Model Name <span style="color: var(--accent); font-weight: 600;">*</span></label>
+                <input type="text" id="modelNameInput" class="input-field" placeholder="e.g. dragon_statue" style="width: 100%; font-size: 0.85rem;" maxlength="64" />
+                <span class="upload-hint" style="margin-top: 4px; display: block; font-size: 0.7rem; opacity: 0.5;">Required for OBJ export — used in filenames &amp; materials</span>
+              </div>
               <div class="slider-grid">
                 <div class="slider-item">
                   <label>Decimation <span class="slider-val" id="dec_val">500K</span></label>

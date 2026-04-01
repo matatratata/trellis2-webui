@@ -175,6 +175,14 @@ def make_timestamp() -> str:
     now = datetime.now()
     return now.strftime("%Y-%m-%dT%H%M%S") + f".{now.microsecond // 1000:03d}"
 
+def sanitize_model_name(name: str) -> str:
+    """Sanitize user-provided model name for safe filesystem and material use."""
+    import re
+    name = name.strip().lower()
+    name = re.sub(r'[^a-z0-9_\-]', '_', name)
+    name = re.sub(r'_+', '_', name).strip('_')
+    return name[:64] if name else 'model'
+
 def render_preview_images(mesh, envmap_dict) -> dict:
     mesh.simplify(16777216)
     images = render_utils.render_snapshot(
@@ -586,9 +594,12 @@ async def extract_glb(
 @app.post("/api/extract-obj")
 async def extract_obj(
     session_id: str = Form(...),
+    model_name: str = Form("model"),
     decimation_target: int = Form(500000),
     texture_size: int = Form(2048),
 ):
+    model_name = sanitize_model_name(model_name)
+
     if session_id not in latent_store:
         raise HTTPException(status_code=404, detail="Session not found. Generate a model first.")
 
@@ -652,7 +663,7 @@ async def extract_obj(
                 obj_dir = session_dir / f"obj_{ts}"
                 obj_dir.mkdir(exist_ok=True)
 
-                obj_path = obj_dir / "model.obj"
+                obj_path = obj_dir / f"{model_name}.obj"
                 textured_mesh.export(str(obj_path), file_type='obj', include_texture=True)
 
                 # ── Save individual PBR maps alongside OBJ ──
@@ -662,27 +673,89 @@ async def extract_obj(
                     bc_tex = getattr(mat, 'baseColorTexture', None)
                     if bc_tex is not None:
                         bc_arr = np.array(bc_tex)
-                        # Save full RGBA base‑color
-                        Image.fromarray(bc_arr[:, :, :3]).save(str(obj_dir / "basecolor.png"))
+                        Image.fromarray(bc_arr[:, :, :3]).save(str(obj_dir / f"{model_name}_basecolor.png"))
                         if bc_arr.shape[-1] == 4:
-                            Image.fromarray(bc_arr[:, :, 3]).save(str(obj_dir / "alpha.png"))
+                            Image.fromarray(bc_arr[:, :, 3]).save(str(obj_dir / f"{model_name}_alpha.png"))
 
                     # MetallicRoughness from metallicRoughnessTexture
                     # glTF packing: R=unused, G=roughness, B=metallic
                     mr_tex = getattr(mat, 'metallicRoughnessTexture', None)
                     if mr_tex is not None:
                         mr_arr = np.array(mr_tex)
-                        Image.fromarray(mr_arr[:, :, 2]).save(str(obj_dir / "metallic.png"))
-                        Image.fromarray(mr_arr[:, :, 1]).save(str(obj_dir / "roughness.png"))
+                        Image.fromarray(mr_arr[:, :, 2]).save(str(obj_dir / f"{model_name}_metallic.png"))
+                        Image.fromarray(mr_arr[:, :, 1]).save(str(obj_dir / f"{model_name}_roughness.png"))
 
-                    print(f"[OBJ] PBR maps saved: basecolor, metallic, roughness, alpha")
+                    # Normal map from normalTexture (baked in postprocess.py)
+                    nm_tex = getattr(mat, 'normalTexture', None)
+                    if nm_tex is not None:
+                        Image.fromarray(np.array(nm_tex)[:, :, :3]).save(str(obj_dir / f"{model_name}_normal.png"))
+
+                    print(f"[OBJ] PBR maps saved for '{model_name}': basecolor, metallic, roughness, normal, alpha")
                 except Exception as pbr_err:
                     print(f"⚠ Could not save PBR maps: {pbr_err}")
+
+                # ── Write comprehensive .mtl referencing all PBR maps ──
+                try:
+                    mtl_path = obj_dir / f"{model_name}.mtl"
+                    mtl_lines = [
+                        f"# PBR Material for {model_name}",
+                        f"# Exported by TRELLIS.2 WebUI",
+                        f"newmtl {model_name}",
+                        "Ka 0.2 0.2 0.2",
+                        "Kd 1.0 1.0 1.0",
+                        "Ks 0.5 0.5 0.5",
+                        "Ns 225.0",
+                        "d 1.0",
+                        "illum 2",
+                        f"map_Kd {model_name}_basecolor.png",
+                    ]
+                    if (obj_dir / f"{model_name}_metallic.png").exists():
+                        mtl_lines.append(f"map_Pm {model_name}_metallic.png")       # PBR metallic
+                        mtl_lines.append(f"refl -type sphere {model_name}_metallic.png")  # Fallback
+                    if (obj_dir / f"{model_name}_roughness.png").exists():
+                        mtl_lines.append(f"map_Pr {model_name}_roughness.png")      # PBR roughness
+                        mtl_lines.append(f"map_Ns {model_name}_roughness.png")      # Fallback: roughness → specular exponent map
+                    if (obj_dir / f"{model_name}_normal.png").exists():
+                        mtl_lines.append(f"map_Bump {model_name}_normal.png")       # Normal/bump map
+                        mtl_lines.append(f"norm {model_name}_normal.png")            # Explicit normal map (modern .mtl)
+                    if (obj_dir / f"{model_name}_alpha.png").exists():
+                        mtl_lines.append(f"map_d {model_name}_alpha.png")            # Dissolve/opacity map
+                    mtl_lines.append("")
+                    mtl_path.write_text("\n".join(mtl_lines))
+
+                    # Patch OBJ to reference our mtl (trimesh may write its own)
+                    obj_text = obj_path.read_text()
+                    if "mtllib" in obj_text:
+                        obj_text = "\n".join(
+                            line if not line.startswith("mtllib") else f"mtllib {model_name}.mtl"
+                            for line in obj_text.splitlines()
+                        )
+                    else:
+                        obj_text = f"mtllib {model_name}.mtl\n" + obj_text
+                    # Ensure usemtl references our material name
+                    if "usemtl" in obj_text:
+                        import re as _re
+                        obj_text = _re.sub(r'usemtl\s+\S+', f'usemtl {model_name}', obj_text)
+                    else:
+                        obj_text = obj_text.replace(f"mtllib {model_name}.mtl", f"mtllib {model_name}.mtl\nusemtl {model_name}", 1)
+                    obj_path.write_text(obj_text)
+
+                    print(f"[OBJ] Wrote {model_name}.mtl with all PBR map references")
+                except Exception as mtl_err:
+                    print(f"⚠ Could not write material.mtl: {mtl_err}")
 
                 del textured_mesh
                 gc.collect()
 
-                zip_path = session_dir / f"model_{ts}.zip"
+                # Remove any stale trimesh-generated .mtl and texture files (we wrote our own)
+                for stale_mtl in obj_dir.glob("*.mtl"):
+                    if stale_mtl.name != f"{model_name}.mtl":
+                        stale_mtl.unlink(missing_ok=True)
+                # Remove trimesh's auto-generated texture (typically material_0.png)
+                for stale_tex in obj_dir.glob("material_*.png"):
+                    stale_tex.unlink(missing_ok=True)
+
+                zip_path = session_dir / f"{model_name}.zip"
                 with zipfile.ZipFile(str(zip_path), 'w', zipfile.ZIP_DEFLATED) as zf:
                     for f in obj_dir.iterdir():
                         zf.write(str(f), f.name)
