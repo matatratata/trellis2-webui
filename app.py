@@ -339,6 +339,11 @@ async def generate(
                     progress_store[task_id] = {"stage": "Decoding mesh", "step": 75, "total": 100, "done": False}
                     out_mesh = pipeline.decode_latent(shape_slat, tex_slat, res)
                     mesh = out_mesh[0]
+                    
+                    # Free the enormous slat tensors BEFORE rendering previews
+                    del shape_slat, tex_slat
+                    gc.collect()
+                    _torch.cuda.empty_cache()
 
                     progress_store[task_id] = {"stage": "Rendering preview", "step": 80, "total": 100, "done": False}
                     restore_envmaps()
@@ -355,7 +360,7 @@ async def generate(
                         'res': res,
                     }
 
-                    del shape_slat, tex_slat, out_mesh, mesh
+                    del out_mesh, mesh
                     gc.collect()
                     _torch.cuda.empty_cache()
 
@@ -441,11 +446,15 @@ async def generate_multiview(
                         pipeline_type=pipeline_type, return_latent=True,
                     )
 
+                    res = latents[2]
+                    del latents
+                    gc.collect()
+                    _torch.cuda.empty_cache()
+
                     progress_store[task_id] = {"stage": "Rendering preview", "step": 80, "total": 100, "done": False}
                     mesh = outputs[0]
                     restore_envmaps()
                     previews = render_preview_images(mesh, envmap)
-                    res = latents[2]
 
                     # ✅ Extract fully decoded raw tensors here!
                     state = {
@@ -457,7 +466,7 @@ async def generate_multiview(
                         'res': res,
                     }
 
-                    del outputs, latents, mesh
+                    del outputs, mesh
                     gc.collect()
                     _torch.cuda.empty_cache()
 
@@ -645,6 +654,30 @@ async def extract_obj(
 
                 obj_path = obj_dir / "model.obj"
                 textured_mesh.export(str(obj_path), file_type='obj', include_texture=True)
+
+                # ── Save individual PBR maps alongside OBJ ──
+                try:
+                    mat = textured_mesh.visual.material
+                    # BaseColor (RGB) + Alpha from baseColorTexture (RGBA)
+                    bc_tex = getattr(mat, 'baseColorTexture', None)
+                    if bc_tex is not None:
+                        bc_arr = np.array(bc_tex)
+                        # Save full RGBA base‑color
+                        Image.fromarray(bc_arr[:, :, :3]).save(str(obj_dir / "basecolor.png"))
+                        if bc_arr.shape[-1] == 4:
+                            Image.fromarray(bc_arr[:, :, 3]).save(str(obj_dir / "alpha.png"))
+
+                    # MetallicRoughness from metallicRoughnessTexture
+                    # glTF packing: R=unused, G=roughness, B=metallic
+                    mr_tex = getattr(mat, 'metallicRoughnessTexture', None)
+                    if mr_tex is not None:
+                        mr_arr = np.array(mr_tex)
+                        Image.fromarray(mr_arr[:, :, 2]).save(str(obj_dir / "metallic.png"))
+                        Image.fromarray(mr_arr[:, :, 1]).save(str(obj_dir / "roughness.png"))
+
+                    print(f"[OBJ] PBR maps saved: basecolor, metallic, roughness, alpha")
+                except Exception as pbr_err:
+                    print(f"⚠ Could not save PBR maps: {pbr_err}")
 
                 del textured_mesh
                 gc.collect()
