@@ -314,16 +314,16 @@ PYEOF
     # (we already built and installed them from patched local clones)
     sed -i '/cumesh @/d; /flex_gemm @/d' "$EXTDIR/o-voxel/pyproject.toml"
 
-    # Patch o-voxel postprocess.py to bake normal maps via nvdiffrast GPU rasterizer.
+    # Patch o-voxel postprocess.py to bake tangent-space normal maps.
     # Must be inlined here because $WEBUI_DIR hasn't been cloned yet (Phase 1).
-    echo "      Patching postprocess.py for normal map baking..."
+    echo "      Patching postprocess.py for tangent-space normal map baking..."
     NMAP_PATCH="$EXTDIR/normal_map_bake_patch.py"
     cat > "$NMAP_PATCH" << 'PYEOF'
-"""Patch o_voxel postprocess.py: bake vertex normals into a normal map texture.
+"""Patch o_voxel postprocess.py: bake tangent-space normal map texture.
 
-Adds GPU-accelerated normal map baking using the existing nvdiffrast UV
-rasterization pipeline, with coordinate-system conversion and seam inpainting.
-The normalTexture is then set on the PBR material for OBJ/GLB export.
+Captures rast_db from nvdiffrast, computes original mesh vertex normals,
+builds a TBN basis from UV-space position derivatives, and projects
+high-res normals into tangent space for correct blue-dominant normal maps.
 """
 import sys, os
 
@@ -336,8 +336,39 @@ def patch(ovoxel_dir):
     src = open(target).read()
     changed = False
 
-    # Patch 1: Bake normals into texture after attribute sampling
-    old_1 = (
+    # Patch 1: Capture rast_db in rasterization loop
+    old_rast = (
+        "    rast = torch.zeros((1, texture_size, texture_size, 4), device='cuda', dtype=torch.float32)\n"
+        "    \n"
+        "    # Rasterize in chunks to save memory\n"
+        "    for i in range(0, out_faces.shape[0], 100000):\n"
+        "        rast_chunk, _ = dr.rasterize(\n"
+    )
+    new_rast = (
+        "    rast = torch.zeros((1, texture_size, texture_size, 4), device='cuda', dtype=torch.float32)\n"
+        "    rast_deriv = torch.zeros((1, texture_size, texture_size, 4), device='cuda', dtype=torch.float32)\n"
+        "    \n"
+        "    # Rasterize in chunks to save memory\n"
+        "    for i in range(0, out_faces.shape[0], 100000):\n"
+        "        rast_chunk, rast_db_chunk = dr.rasterize(\n"
+    )
+    if "rast_deriv" in src:
+        print("      [SKIP] rast_deriv already present")
+    elif old_rast in src:
+        src = src.replace(old_rast, new_rast)
+        old_acc = "        rast = torch.where(mask_chunk, rast_chunk, rast)\n"
+        new_acc = (
+            "        rast = torch.where(mask_chunk, rast_chunk, rast)\n"
+            "        rast_deriv = torch.where(mask_chunk, rast_db_chunk, rast_deriv)\n"
+        )
+        src = src.replace(old_acc, new_acc)
+        changed = True
+        print("      Captured rast_db derivatives")
+    else:
+        print("      [WARN] Could not find rasterization pattern")
+
+    # Patch 2: Tangent-space normal map bake after attribute sampling
+    old_after = (
         "    )\n"
         "    if use_tqdm:\n"
         "        pbar.update(1)\n"
@@ -346,19 +377,45 @@ def patch(ovoxel_dir):
         "    \n"
         "    # --- Texture Post-Processing & Material Construction ---"
     )
-    new_1 = (
+    new_after = (
         "    )\n"
         "    \n"
-        "    # --- Bake vertex normals into a normal-map texture ---\n"
-        "    normal_map_tex = dr.interpolate(out_normals.unsqueeze(0), rast, out_faces)[0][0]\n"
-        "    normal_map_tex = normal_map_tex.clone()\n"
-        "    normal_map_tex_y = normal_map_tex[..., 1].clone()\n"
-        "    normal_map_tex_z = normal_map_tex[..., 2].clone()\n"
-        "    normal_map_tex[..., 1] = normal_map_tex_z\n"
-        "    normal_map_tex[..., 2] = -normal_map_tex_y\n"
-        "    nrm_len = normal_map_tex.norm(dim=-1, keepdim=True).clamp(min=1e-8)\n"
-        "    normal_map_tex = normal_map_tex / nrm_len\n"
-        "    normal_map_np = np.clip((normal_map_tex.cpu().numpy() * 0.5 + 0.5) * 255, 0, 255).astype(np.uint8)\n"
+        "    # --- Bake TANGENT-SPACE normal map ---\n"
+        "    _v0, _v1, _v2 = vertices[faces[:, 0]], vertices[faces[:, 1]], vertices[faces[:, 2]]\n"
+        "    _fn = torch.cross(_v1 - _v0, _v2 - _v0, dim=-1)\n"
+        "    orig_vnormals = torch.zeros_like(vertices)\n"
+        "    orig_vnormals.scatter_add_(0, faces[:, 0].unsqueeze(1).expand(-1, 3), _fn)\n"
+        "    orig_vnormals.scatter_add_(0, faces[:, 1].unsqueeze(1).expand(-1, 3), _fn)\n"
+        "    orig_vnormals.scatter_add_(0, faces[:, 2].unsqueeze(1).expand(-1, 3), _fn)\n"
+        "    orig_vnormals = orig_vnormals / orig_vnormals.norm(dim=-1, keepdim=True).clamp(min=1e-8)\n"
+        "    del _v0, _v1, _v2, _fn\n"
+        "    _tri_nrm = orig_vnormals[faces[face_id.long()]]\n"
+        "    hires_valid = (_tri_nrm * uvw.unsqueeze(-1)).sum(dim=1)\n"
+        "    hires_valid = hires_valid / hires_valid.norm(dim=-1, keepdim=True).clamp(min=1e-8)\n"
+        "    del _tri_nrm, orig_vnormals\n"
+        "    hires_nrm = torch.zeros(texture_size, texture_size, 3, device='cuda')\n"
+        "    hires_nrm[mask] = hires_valid\n"
+        "    del hires_valid\n"
+        "    simp_nrm = dr.interpolate(out_normals.unsqueeze(0), rast, out_faces)[0][0]\n"
+        "    simp_nrm = simp_nrm / simp_nrm.norm(dim=-1, keepdim=True).clamp(min=1e-8)\n"
+        "    _, pos_db = dr.interpolate(out_vertices.unsqueeze(0), rast, out_faces, rast_db=rast_deriv, diff_attrs='all')\n"
+        "    T_raw = pos_db[0, ..., 0::2]\n"
+        "    B_raw = pos_db[0, ..., 1::2]\n"
+        "    del pos_db\n"
+        "    N = simp_nrm\n"
+        "    T = T_raw - (T_raw * N).sum(-1, keepdim=True) * N\n"
+        "    T = T / T.norm(dim=-1, keepdim=True).clamp(min=1e-8)\n"
+        "    B = torch.cross(N, T, dim=-1)\n"
+        "    hand = (B_raw * B).sum(-1, keepdim=True).sign()\n"
+        "    hand[hand == 0] = 1.0\n"
+        "    B = B * hand\n"
+        "    del T_raw, B_raw, hand\n"
+        "    ts = torch.stack([(hires_nrm * T).sum(-1), (hires_nrm * B).sum(-1), (hires_nrm * N).sum(-1)], dim=-1)\n"
+        "    ts = ts / ts.norm(dim=-1, keepdim=True).clamp(min=1e-8)\n"
+        "    del T, B, N, simp_nrm, hires_nrm\n"
+        "    ts[~mask] = torch.tensor([0.0, 0.0, 1.0], device='cuda')\n"
+        "    normal_map_np = np.clip((ts.cpu().numpy() * 0.5 + 0.5) * 255, 0, 255).astype(np.uint8)\n"
+        "    del ts\n"
         "\n"
         "    if use_tqdm:\n"
         "        pbar.update(1)\n"
@@ -368,55 +425,55 @@ def patch(ovoxel_dir):
         "    # --- Texture Post-Processing & Material Construction ---"
     )
 
-    if "# --- Bake vertex normals into a normal-map" in src:
-        print("      [SKIP] Normal map bake already applied")
-    elif old_1 in src:
-        src = src.replace(old_1, new_1)
+    if "# --- Bake TANGENT-SPACE normal map ---" in src:
+        print("      [SKIP] Tangent-space normal map already applied")
+    elif "# --- Bake vertex normals into a normal-map" in src:
+        print("      [WARN] Old world-space patch detected — manual update needed")
+    elif old_after in src:
+        src = src.replace(old_after, new_after)
         changed = True
-        print("      Applied normal map baking via nvdiffrast")
+        print("      Applied tangent-space normal map baking")
     else:
         print("      [WARN] Could not find attribute sampling pattern")
 
-    # Patch 2: Inpaint the normal map alongside other textures
-    old_2 = (
+    # Patch 3: Inpaint normal map
+    old_inp = (
         "    alpha = cv2.inpaint(alpha, mask_inv, 1, cv2.INPAINT_TELEA)[..., None]\n"
         "    \n"
         "    # Create PBR material"
     )
-    new_2 = (
+    new_inp = (
         "    alpha = cv2.inpaint(alpha, mask_inv, 1, cv2.INPAINT_TELEA)[..., None]\n"
         "    normal_map_np[~mask] = [128, 128, 255]\n"
         "    normal_map_np = cv2.inpaint(normal_map_np, mask_inv, 3, cv2.INPAINT_TELEA)\n"
         "    \n"
         "    # Create PBR material (with normal map)"
     )
-
     if "normal_map_np = cv2.inpaint" in src:
         print("      [SKIP] Normal map inpaint already applied")
-    elif old_2 in src:
-        src = src.replace(old_2, new_2)
+    elif old_inp in src:
+        src = src.replace(old_inp, new_inp)
         changed = True
         print("      Applied normal map inpainting")
     else:
         print("      [WARN] Could not find inpainting pattern")
 
-    # Patch 3: Add normalTexture to PBR material constructor
-    old_3 = (
+    # Patch 4: Add normalTexture to PBR material
+    old_mat = (
         "        metallicFactor=1.0,\n"
         "        roughnessFactor=1.0,\n"
         "        alphaMode=alpha_mode,"
     )
-    new_3 = (
+    new_mat = (
         "        metallicFactor=1.0,\n"
         "        roughnessFactor=1.0,\n"
         "        normalTexture=Image.fromarray(normal_map_np),\n"
         "        alphaMode=alpha_mode,"
     )
-
     if "normalTexture=Image.fromarray(normal_map_np)" in src:
-        print("      [SKIP] normalTexture already in PBR material")
-    elif old_3 in src:
-        src = src.replace(old_3, new_3)
+        print("      [SKIP] normalTexture already present")
+    elif old_mat in src:
+        src = src.replace(old_mat, new_mat)
         changed = True
         print("      Applied normalTexture to PBR material")
     else:
@@ -424,7 +481,7 @@ def patch(ovoxel_dir):
 
     if changed:
         open(target, 'w').write(src)
-        print("      ✅ Normal map patches applied to postprocess.py")
+        print("      ✅ Tangent-space normal map patches applied")
     else:
         print("      No changes needed")
 
