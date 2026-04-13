@@ -5,21 +5,33 @@
 # =============================================================================
 set -euo pipefail
 
-TRELLIS_DIR="../TRELLIS.2"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TRELLIS_DIR="${TRELLIS_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)/TRELLIS.2}"
 VENV_DIR="${TRELLIS_DIR}/.venv"
 
 if [ ! -d "$VENV_DIR" ]; then
-    echo "❌ Error: Could not find TRELLIS.2 virtual environment at $VENV_DIR"
+    echo "❌ TRELLIS.2 venv not found at $VENV_DIR"
+    echo "Run ./setup_local.sh first."
     exit 1
 fi
-
-echo "🚀 Starting TRELLIS.2 WebUI using upstream environment..."
 
 # Activate the upstream venv
 source "${VENV_DIR}/bin/activate"
 
-# Fallback model path if not set in environment
-export TRELLIS_MODEL_PATH="${TRELLIS_MODEL_PATH:-/home/matatrata/AI/Models/TRELLIS.2-4B}"
+# Environment
+export TRELLIS_MODEL_PATH="${TRELLIS_MODEL_PATH:-$HOME/AI/Models/TRELLIS.2-4B}"
+export PYTHONPATH="${TRELLIS_DIR}:${PYTHONPATH:-}"
+export ATTN_BACKEND="${ATTN_BACKEND:-sdpa}"
+export SPARSE_ATTN_BACKEND="${SPARSE_ATTN_BACKEND:-sdpa}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export OPENCV_IO_ENABLE_OPENEXR="${OPENCV_IO_ENABLE_OPENEXR:-1}"
 
-# Run the app
-exec python app.py
+PORT="${TRELLIS_PORT:-8000}"
+
+echo "🚀 Starting TRELLIS.2 WebUI..."
+echo "   Model: $TRELLIS_MODEL_PATH"
+echo "   Port:  $PORT"
+echo ""
+
+cd "$SCRIPT_DIR"
+exec python -m uvicorn app:app --host 0.0.0.0 --port "$PORT"
