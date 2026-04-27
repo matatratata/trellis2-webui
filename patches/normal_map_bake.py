@@ -111,7 +111,7 @@ def patch(ovoxel_dir):
         "    hand[hand == 0] = 1.0\n"
         "    B = B * hand\n"
         "    del T_raw, B_raw, hand\n"
-        "    ts = torch.stack([(hires_nrm * T).sum(-1), (hires_nrm * B).sum(-1), (hires_nrm * N).sum(-1)], dim=-1)\n"
+        "    ts = torch.stack([(hires_nrm * T).sum(-1), -(hires_nrm * B).sum(-1), (hires_nrm * N).sum(-1)], dim=-1)\n"
         "    ts = ts / ts.norm(dim=-1, keepdim=True).clamp(min=1e-8)\n"
         "    del T, B, N, simp_nrm, hires_nrm\n"
         "    ts[~mask] = torch.tensor([0.0, 0.0, 1.0], device='cuda')\n"
