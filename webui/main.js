@@ -398,6 +398,22 @@ function updateProgress(percent, stage) {
   $('#progressStage').textContent = stage;
 }
 
+// SSE progress poller — connects to /api/progress/{taskId} and updates the
+// progress ring in real time.  Returns a stop() function to close the stream.
+function pollProgress(taskId) {
+  const es = new EventSource(`/api/progress/${taskId}`);
+  es.onmessage = (evt) => {
+    try {
+      const info = JSON.parse(evt.data);
+      const pct = info.step != null && info.total ? Math.round((info.step / info.total) * 100) : 0;
+      updateProgress(pct, info.stage || 'Processing…');
+      if (info.done) es.close();
+    } catch (_) { /* ignore parse errors */ }
+  };
+  es.onerror = () => { es.close(); };
+  return () => es.close();
+}
+
 async function generateSingle() {
   if (!state.singleImage) {
     alert('Please upload an image first.');
@@ -406,14 +422,19 @@ async function generateSingle() {
   setGenerating(true);
   updateProgress(5, 'Uploading image…');
 
+  const taskId = crypto.randomUUID();
   const settings = getSettings();
   const formData = new FormData();
   formData.append('image', state.singleImage);
+  formData.append('task_id', taskId);
   Object.entries(settings).forEach(([k, v]) => formData.append(k, String(v)));
 
+  // Start SSE progress polling immediately
+  const stopPolling = pollProgress(taskId);
+
   try {
-    updateProgress(10, 'Generating 3D model…');
     const res = await fetch('/api/generate', { method: 'POST', body: formData });
+    stopPolling();
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.detail || 'Generation failed');
@@ -425,6 +446,7 @@ async function generateSingle() {
     state.glbUrl = null;
     showPreviews();
   } catch (err) {
+    stopPolling();
     alert(`Error: ${err.message}`);
   } finally {
     setGenerating(false);
@@ -440,14 +462,19 @@ async function generateMultiView() {
   setGenerating(true);
   updateProgress(5, 'Uploading images…');
 
+  const taskId = crypto.randomUUID();
   const settings = getSettings();
   const formData = new FormData();
+  formData.append('task_id', taskId);
   images.forEach((file, i) => formData.append(`image_${i}`, file));
   Object.entries(settings).forEach(([k, v]) => formData.append(k, String(v)));
 
+  // Start SSE progress polling immediately
+  const stopPolling = pollProgress(taskId);
+
   try {
-    updateProgress(10, 'Generating 3D model (multi-view)…');
     const res = await fetch('/api/generate-multiview', { method: 'POST', body: formData });
+    stopPolling();
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.detail || 'Generation failed');
@@ -459,6 +486,7 @@ async function generateMultiView() {
     state.glbUrl = null;
     showPreviews();
   } catch (err) {
+    stopPolling();
     alert(`Error: ${err.message}`);
   } finally {
     setGenerating(false);

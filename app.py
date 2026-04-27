@@ -272,6 +272,7 @@ async def generate(
     seed: int = Form(0),
     randomize_seed: bool = Form(True),
     resolution: str = Form("1024"),
+    task_id: str = Form(""),
     ss_guidance_strength: float = Form(7.5),
     ss_guidance_rescale: float = Form(0.7),
     ss_sampling_steps: int = Form(12),
@@ -285,7 +286,7 @@ async def generate(
     tex_sampling_steps: int = Form(12),
     tex_rescale_t: float = Form(3.0),
 ):
-    task_id = str(uuid.uuid4())
+    task_id = task_id.strip() or str(uuid.uuid4())
     session_id = str(uuid.uuid4())
 
     if randomize_seed:
@@ -403,6 +404,7 @@ async def generate_multiview(
     seed: int = Form(0),
     randomize_seed: bool = Form(True),
     resolution: str = Form("1024"),
+    task_id: str = Form(""),
     ss_guidance_strength: float = Form(7.5),
     ss_guidance_rescale: float = Form(0.7),
     ss_sampling_steps: int = Form(12),
@@ -416,7 +418,7 @@ async def generate_multiview(
     tex_sampling_steps: int = Form(12),
     tex_rescale_t: float = Form(3.0),
 ):
-    task_id = str(uuid.uuid4())
+    task_id = task_id.strip() or str(uuid.uuid4())
     session_id = str(uuid.uuid4())
 
     if randomize_seed:
